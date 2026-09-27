@@ -9,8 +9,8 @@
  * 四个都要写，否则匹配不上就等同于「网站没打开」。
  */
 export const TARGET_SITE_PATTERNS: string[] = [
-  'http://localhost:5173/*',
-  'http://127.0.0.1:5173/*',
+  'http://localhost:5199/*',
+  'http://127.0.0.1:5199/*',
   'https://www.998244353.best/*',
   'https://998244353.best/*',
 ];

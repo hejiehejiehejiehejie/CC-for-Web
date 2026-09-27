@@ -84,7 +84,7 @@ async function notifyNoTargetTab(): Promise<void> {
     await browser.notifications.create(NO_TARGET_NOTIFICATION_ID, {
       type: 'basic',
       iconUrl: 'icons/icon-128.png',
-      title: 'Competitive Companion',
+      title: 'CC for Web',
       message: '没有找到已打开的题目管理网站，请先打开后再解析。',
     });
   } catch {

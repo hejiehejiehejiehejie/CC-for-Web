@@ -1,7 +1,7 @@
 {
   "name": "competitive-companion",
-  "productName": "Competitive Companion",
-  "version": "2.65.0",
+  "productName": "CC for Web",
+  "version": "2.65.1",
   "description": "Parses competitive programming problems and sends them to various tools like CP Editor and CPH.",
   "repository": "https://github.com/jmerle/competitive-companion",
   "author": "Jasper van Merle",
@@ -19,6 +19,7 @@
     "package:chrome": "pnpm build:chrome && web-ext build -s build-chrome/ -a dist/ -o -n {name}-{version}-chrome.zip",
     "package:firefox": "pnpm build:firefox && web-ext build -s build-firefox/ -a dist/ -o -n {name}-{version}-firefox.zip",
     "generate-banners": "tsx scripts/generate-banners.ts",
+    "generate-icons": "tsx scripts/generate-icons.ts",
     "lint": "pnpm run \"/^lint:.*/\"",
     "lint:eslint": "eslint --format codeframe \"src/**/*.ts\" \"tests/**/*.ts\" \"scripts/**/*.ts\" jest.config.cts",
     "lint:prettier": "prettier --check --ignore-path .gitignore \"**/*.{ts,js,cts,html,yml,json}\"",

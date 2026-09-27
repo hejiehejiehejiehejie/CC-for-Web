@@ -1,7 +1,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as puppeteer from 'puppeteer';
-import { projectRoot } from './utils';
+import { chromeLaunchOptions, projectRoot } from './utils';
 
 interface BaseImage {
   svg: (baseX: number, baseY: number, newWidth: number, newHeight: number) => string;
@@ -95,7 +95,7 @@ async function generateBanner(name: string, width: number, height: number): Prom
     :root {
       --background-color: #303030;
       --text-color: #ffffff;
-      --icon-color: #759b23;
+      --icon-color: #0e639c;
       --icon-inner-color: var(--background-color);
     }
   </style>
@@ -123,9 +123,7 @@ const requiredBanners: [string, number, number][] = [
   ['chrome-marquee-promo', 1400, 560],
 ];
 
-const browser = await puppeteer.launch({
-  headless: true,
-});
+const browser = await puppeteer.launch(chromeLaunchOptions());
 
 const page = await browser.newPage();
 

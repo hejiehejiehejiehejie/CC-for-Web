@@ -4,7 +4,7 @@
     :root {
       --background-color: #303030;
       --text-color: #ffffff;
-      --icon-color: #759b23;
+      --icon-color: #0e639c;
       --icon-inner-color: var(--background-color);
     }
   </style>
