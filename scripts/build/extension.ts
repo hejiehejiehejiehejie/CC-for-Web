@@ -1,6 +1,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as esbuild from 'esbuild';
+import { TARGET_SITE_PATTERNS } from '../../src/hosts/targetSites';
 import { requiredPermissions } from '../../src/utils/request';
 import { projectRoot } from '../utils';
 import { commonOptions, getBuildDirectory } from './utils';
@@ -31,8 +32,22 @@ await Promise.all(
           author: packageJson.author,
           homepage_url: packageJson.repository,
 
-          permissions: ['activeTab', 'contextMenus', 'storage', 'scripting'],
-          host_permissions: ['http://localhost/'],
+          // notifications：找不到目标网站标签页时弹系统通知
+          permissions: ['activeTab', 'contextMenus', 'storage', 'scripting', 'notifications'],
+          // 改造后不再 POST localhost，改为把解析结果推给目标网站标签页；
+          // 这组 origin 同时也是 content_scripts 的注入范围，且必须覆盖 tabs.query 要过滤的 URL
+          host_permissions: TARGET_SITE_PATTERNS,
+
+          // 桥接脚本：在目标网站里把扩展消息转成 window.postMessage，
+          // 让网页（拿不到 chrome.runtime）也能收到题目、并握手查询扩展信息。
+          // document_start 是为了让网页在 DOMContentLoaded 时握手就能收到回应。
+          content_scripts: [
+            {
+              matches: TARGET_SITE_PATTERNS,
+              js: ['js/bridge.js'],
+              run_at: 'document_start',
+            },
+          ],
 
           icons: {
             '16': 'icons/icon-16.png',
@@ -131,6 +146,7 @@ const options: esbuild.BuildOptions = {
   ...commonOptions,
   entryPoints: [
     path.resolve(projectRoot, 'src/background.ts'),
+    path.resolve(projectRoot, 'src/bridge.ts'),
     path.resolve(projectRoot, 'src/content.ts'),
     path.resolve(projectRoot, 'src/options.ts'),
   ],
