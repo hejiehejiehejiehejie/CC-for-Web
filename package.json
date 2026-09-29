@@ -1,7 +1,7 @@
 {
   "name": "competitive-companion",
   "productName": "CC for Web",
-  "version": "2.65.2",
+  "version": "2.65.3",
   "description": "Parses competitive programming problems and sends them to various tools like CP Editor and CPH.",
   "repository": "https://github.com/jmerle/competitive-companion",
   "author": "Jasper van Merle",

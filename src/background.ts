@@ -2,6 +2,7 @@ import type { Menus, Runtime, Tabs } from 'webextension-polyfill';
 import { getHosts } from './hosts/hosts';
 import { Message, MessageAction } from './models/messaging';
 import { browser } from './utils/browser';
+import { config } from './utils/config';
 import { sendToContent } from './utils/messaging';
 import { request, requiredPermissions } from './utils/request';
 
@@ -140,19 +141,29 @@ async function makeRequest(
   }
 }
 
+/** 允许网页修改的配置键白名单：只放投递目标开关，别的键一律不认 */
+const WRITABLE_CONFIG_KEYS = ['sendToWebPage', 'sendToLocalTools'] as const;
+type WritableConfigKey = (typeof WRITABLE_CONFIG_KEYS)[number];
+
 interface ExtensionInfo {
   version: string;
   commands: Array<{ name: string; description: string; shortcut: string }>;
+  config: Record<WritableConfigKey, boolean>;
 }
 
 /**
  * 供目标网站通过桥接脚本（src/bridge.ts）握手查询：
- * 版本号用于网站判断扩展是否已安装，commands 用于展示扩展的快捷键绑定。
+ * 版本号用于网站判断扩展是否已安装，commands 用于展示扩展的快捷键绑定，
+ * config 是投递目标开关的当前值（网站据此渲染开关状态）。
  * 注意：Chrome 没有任何 API 能让网页改写这些快捷键，网站只能展示 + 引导用户去
  * chrome://extensions/shortcuts 手动改（网页也无法直接跳转到 chrome:// 地址）。
  */
 async function getExtensionInfo(): Promise<ExtensionInfo> {
-  const commands = await browser.commands.getAll();
+  const [commands, sendToWebPage, sendToLocalTools] = await Promise.all([
+    browser.commands.getAll(),
+    config.get('sendToWebPage'),
+    config.get('sendToLocalTools'),
+  ]);
 
   return {
     version: browser.runtime.getManifest().version,
@@ -161,7 +172,22 @@ async function getExtensionInfo(): Promise<ExtensionInfo> {
       description: command.description ?? '',
       shortcut: command.shortcut ?? '',
     })),
+    config: { sendToWebPage, sendToLocalTools },
   };
+}
+
+/** 写入投递目标开关。只认白名单键与布尔值，其余一律拒绝，避免网页乱改存储 */
+async function setConfig(key: unknown, value: unknown): Promise<boolean> {
+  if (typeof key !== 'string' || !WRITABLE_CONFIG_KEYS.includes(key as WritableConfigKey)) {
+    return false;
+  }
+
+  if (typeof value !== 'boolean') {
+    return false;
+  }
+
+  await config.set(key as WritableConfigKey, value);
+  return true;
 }
 
 function handleMessage(
@@ -173,6 +199,15 @@ function handleMessage(
     getExtensionInfo()
       .then(info => sendResponse(info))
       .catch(() => sendResponse(null));
+
+    return true;
+  }
+
+  // 网页侧（设置面板的投递目标开关）改配置：写成功与否都回 { ok, value }
+  if (message.action === 'cph-set-config') {
+    setConfig(message.key, message.value)
+      .then(async ok => sendResponse({ ok, key: message.key, value: ok ? await config.get(message.key) : undefined }))
+      .catch(() => sendResponse({ ok: false }));
 
     return true;
   }

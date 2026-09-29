@@ -50,17 +50,31 @@ window.addEventListener('message', (event: MessageEvent) => {
     return;
   }
 
-  const data = event.data as { source?: string; type?: string; requestId?: string } | undefined;
-  if (data?.source !== PAGE_SOURCE || data.type !== 'cph-ping') {
+  const data = event.data as
+    | { source?: string; type?: string; requestId?: string; key?: string; value?: unknown }
+    | undefined;
+  if (data?.source !== PAGE_SOURCE) {
     return;
   }
 
   const requestId = data.requestId;
 
-  browser.runtime
-    .sendMessage({ action: 'cph-get-info' })
-    .then(info => postToPage('cph-info', { requestId, info: info ?? null }))
-    .catch(() => postToPage('cph-info', { requestId, info: null }));
+  if (data.type === 'cph-ping') {
+    browser.runtime
+      .sendMessage({ action: 'cph-get-info' })
+      .then(info => postToPage('cph-info', { requestId, info: info ?? null }))
+      .catch(() => postToPage('cph-info', { requestId, info: null }));
+
+    return;
+  }
+
+  // 网页改投递目标开关：键与值的合法性由 background 的白名单把关
+  if (data.type === 'cph-set-config') {
+    browser.runtime
+      .sendMessage({ action: 'cph-set-config', key: data.key, value: data.value })
+      .then(result => postToPage('cph-config', { requestId, key: data.key, ...(result as object) }))
+      .catch(() => postToPage('cph-config', { requestId, key: data.key, ok: false }));
+  }
 });
 
 browser.runtime.onMessage.addListener(onExtensionMessage);
