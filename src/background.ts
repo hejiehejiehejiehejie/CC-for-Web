@@ -44,26 +44,52 @@ function createContextMenu(): void {
 }
 
 async function loadContentScript(tab: Tabs.Tab, parserName: string): Promise<void> {
-  // localhost 的 host 权限已经在 manifest 的 host_permissions 里静态声明（见 scripts/build/extension.ts），
-  // 所以这里只需要按站点补请求解析用的那几条可选权限
-  const permissionOrigins: string[] = [];
+  // 点图标 / 按快捷键这条链路全程没有任何界面反馈：里面任何一步失败，用户看到的就是
+  // 「按了没反应」，错误只留在 service worker 控制台里（unhandled rejection）。
+  // 所以整段包了 try/catch，失败时用系统通知说明原因。
+  try {
+    // 拿不到 url 说明这个标签页没有授权（chrome:// 等特权页面，或 host 权限被收走），
+    // 以前这里会直接 TypeError 变成静默失败
+    const url = tab.url ?? '';
 
-  for (const prefix in requiredPermissions) {
-    if (tab.url.startsWith(prefix)) {
-      permissionOrigins.push(requiredPermissions[prefix]);
+    if (url.length === 0) {
+      await notify(
+        INJECT_FAILED_NOTIFICATION_ID,
+        '无法解析当前页面：读不到这个标签页的地址。请在题目页面上重试，或检查扩展的「网站访问权限」是否被设成了特定站点。',
+      );
+
+      return;
     }
-  }
 
-  if (permissionOrigins.length > 0) {
-    await browser.permissions.request({ origins: permissionOrigins });
-  }
+    // localhost 的 host 权限已经在 manifest 的 host_permissions 里静态声明（见 scripts/build/extension.ts），
+    // 所以这里只需要按站点补请求解析用的那几条可选权限
+    const permissionOrigins: string[] = [];
 
-  await browser.scripting.executeScript({
-    target: {
-      tabId: tab.id,
-    },
-    files: ['js/content.js'],
-  });
+    for (const prefix in requiredPermissions) {
+      if (url.startsWith(prefix)) {
+        permissionOrigins.push(requiredPermissions[prefix]);
+      }
+    }
+
+    if (permissionOrigins.length > 0) {
+      await browser.permissions.request({ origins: permissionOrigins });
+    }
+
+    await browser.scripting.executeScript({
+      target: {
+        tabId: tab.id,
+      },
+      files: ['js/content.js'],
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : `${err}`;
+    await notify(
+      INJECT_FAILED_NOTIFICATION_ID,
+      `解析脚本注入失败：${message}。如果扩展目录被重新构建过，请在 chrome://extensions 里点一次「重新加载」。`,
+    );
+
+    return;
+  }
 
   sendToContent(tab.id, MessageAction.Parse, { parserName });
 }
@@ -80,18 +106,29 @@ function onContextMenu(info: Menus.OnClickData, tab: Tabs.Tab): void {
 }
 
 const NO_RECEIVER_NOTIFICATION_ID = 'cph-no-receiver';
+const INJECT_FAILED_NOTIFICATION_ID = 'cph-inject-failed';
 
-async function notifyNoReceiver(): Promise<void> {
+/** 系统通知的统一出口：通知本身失败（例如用户关掉了通知权限）不影响主流程 */
+async function notify(id: string, message: string): Promise<void> {
   try {
-    await browser.notifications.create(NO_RECEIVER_NOTIFICATION_ID, {
+    await browser.notifications.create(id, {
       type: 'basic',
-      iconUrl: 'icons/icon-128.png',
+      // 必须给绝对 URL：给 'icons/icon-128.png' 这种相对路径时 Chrome 会直接报
+      // 「Unable to download all specified images.」，通知一条都弹不出来
+      iconUrl: browser.runtime.getURL('icons/icon-128.png'),
       title: 'CC for Web',
-      message: '没有找到接收端：请先打开题目管理网站，或确认本地工具（VS Code 的 CPH、CP Editor 等）正在运行。',
+      message,
     });
   } catch {
-    // 通知失败不影响主流程
+    //
   }
+}
+
+async function notifyNoReceiver(): Promise<void> {
+  await notify(
+    NO_RECEIVER_NOTIFICATION_ID,
+    '没有找到接收端：请先打开题目管理网站，或确认本地工具（VS Code 的 CPH、CP Editor 等）正在运行。',
+  );
 }
 
 async function sendTask(tabId: number, messageId: string, data: string): Promise<void> {
