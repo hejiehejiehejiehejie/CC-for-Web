@@ -1,6 +1,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as esbuild from 'esbuild';
+import { LOCAL_TOOL_ORIGINS } from '../../src/hosts/hosts';
 import { TARGET_SITE_PATTERNS } from '../../src/hosts/targetSites';
 import { requiredPermissions } from '../../src/utils/request';
 import { projectRoot } from '../utils';
@@ -32,11 +33,12 @@ await Promise.all(
           author: packageJson.author,
           homepage_url: packageJson.repository,
 
-          // notifications：找不到目标网站标签页时弹系统通知
+          // notifications：所有接收端都没收到时弹系统通知
           permissions: ['activeTab', 'contextMenus', 'storage', 'scripting', 'notifications'],
-          // 改造后不再 POST localhost，改为把解析结果推给目标网站标签页；
-          // 这组 origin 同时也是 content_scripts 的注入范围，且必须覆盖 tabs.query 要过滤的 URL
-          host_permissions: TARGET_SITE_PATTERNS,
+          // 目标网站：这组 origin 同时也是 content_scripts 的注入范围，且必须覆盖 tabs.query 要过滤的 URL；
+          // localhost：向本地工具（VS Code 的 CPH、CP Editor、CHelper 等）POST 需要的 host 权限，
+          // 与上游一致放在必选权限里——安装时会多一条「读取您在 localhost 上的数据」提示，但之后不再弹框
+          host_permissions: [...TARGET_SITE_PATTERNS, ...LOCAL_TOOL_ORIGINS],
 
           // 桥接脚本：在目标网站里把扩展消息转成 window.postMessage，
           // 让网页（拿不到 chrome.runtime）也能收到题目、并握手查询扩展信息。

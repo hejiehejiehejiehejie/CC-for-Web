@@ -4,7 +4,7 @@ import { Host } from './Host';
 import { TARGET_SITE_PATTERNS } from './targetSites';
 
 /**
- * 改造点：不再向 localhost 的各个端口 POST，改为把 payload 推送给浏览器里打开的目标网站标签页。
+ * 把 payload 推送给浏览器里打开的目标网站标签页（接收端之一，与本地工具并列，见 hosts.ts）。
  *
  * 与上游 Host 的契约保持一致（send() 返回 Promise<void>）：
  *   - 投递成功 -> resolve

@@ -43,7 +43,8 @@ function createContextMenu(): void {
 }
 
 async function loadContentScript(tab: Tabs.Tab, parserName: string): Promise<void> {
-  // 改造后不再向 localhost 发请求，所以这里不再预置 localhost 权限（少弹一次授权）
+  // localhost 的 host 权限已经在 manifest 的 host_permissions 里静态声明（见 scripts/build/extension.ts），
+  // 所以这里只需要按站点补请求解析用的那几条可选权限
   const permissionOrigins: string[] = [];
 
   for (const prefix in requiredPermissions) {
@@ -77,15 +78,15 @@ function onContextMenu(info: Menus.OnClickData, tab: Tabs.Tab): void {
   }
 }
 
-const NO_TARGET_NOTIFICATION_ID = 'cph-no-target-tab';
+const NO_RECEIVER_NOTIFICATION_ID = 'cph-no-receiver';
 
-async function notifyNoTargetTab(): Promise<void> {
+async function notifyNoReceiver(): Promise<void> {
   try {
-    await browser.notifications.create(NO_TARGET_NOTIFICATION_ID, {
+    await browser.notifications.create(NO_RECEIVER_NOTIFICATION_ID, {
       type: 'basic',
       iconUrl: 'icons/icon-128.png',
       title: 'CC for Web',
-      message: '没有找到已打开的题目管理网站，请先打开后再解析。',
+      message: '没有找到接收端：请先打开题目管理网站，或确认本地工具（VS Code 的 CPH、CP Editor 等）正在运行。',
     });
   } catch {
     // 通知失败不影响主流程
@@ -98,12 +99,13 @@ async function sendTask(tabId: number, messageId: string, data: string): Promise
     const results = await Promise.allSettled(hosts.map(host => host.send(data)));
     const delivered = results.some(result => result.status === 'fulfilled');
 
-    if (!delivered) {
-      await notifyNoTargetTab();
+    // 选项页把两侧都关掉时 hosts 为空，此时没投递是用户的选择，不该拿「没有接收端」去打扰他
+    if (!delivered && hosts.length > 0) {
+      await notifyNoReceiver();
     }
 
     // 这里刻意回 Done 而非 Failed：content.ts 收到 SendTaskFailed 会在 OJ 页面上弹出
-    // 一句写死的 "Something went wrong while running ..."，与「没开网站」这个真实原因对不上。
+    // 一句写死的 "Something went wrong while running ..."，与「没有接收端」这个真实原因对不上。
     // 用户提示由上面的系统通知承担。
     sendToContent(tabId, MessageAction.SendTaskDone, { messageId });
   } catch (err) {

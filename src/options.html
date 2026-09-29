@@ -56,6 +56,23 @@
   </head>
   <body>
     <section>
+      <h3>Destinations</h3>
+
+      <input type="checkbox" id="send-to-web-page" />
+      <label for="send-to-web-page">Send to the problem manager website (browser tab)</label>
+
+      <br />
+
+      <input type="checkbox" id="send-to-local-tools" />
+      <label for="send-to-local-tools">Send to local tools (VS Code, CP Editor, ...)</label>
+
+      <p class="description">
+        The parsed data is sent to every enabled destination at the same time. Local tools are reached by POSTing to the
+        ports below, so nothing needs to be installed for this to be enabled.
+      </p>
+    </section>
+
+    <section>
       <h3>Custom tools</h3>
       <label for="custom-ports">Custom ports</label>
 

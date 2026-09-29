@@ -1,6 +1,8 @@
 import { config } from './utils/config';
 import { noop } from './utils/noop';
 
+const sendToWebPageInput = document.querySelector<HTMLInputElement>('#send-to-web-page');
+const sendToLocalToolsInput = document.querySelector<HTMLInputElement>('#send-to-local-tools');
 const customPortsInput = document.querySelector<HTMLInputElement>('#custom-ports');
 const customRulesContainer = document.querySelector<HTMLDivElement>('#custom-rules-container');
 const requestTimeoutInput = document.querySelector<HTMLInputElement>('#request-timeout');
@@ -97,6 +99,14 @@ function addCustomRulesRow(regex?: string, parserName?: string): void {
   customRulesContainer.appendChild(row);
 }
 
+sendToWebPageInput.addEventListener('input', function (): void {
+  config.set('sendToWebPage', this.checked).then(noop).catch(noop);
+});
+
+sendToLocalToolsInput.addEventListener('input', function (): void {
+  config.set('sendToLocalTools', this.checked).then(noop).catch(noop);
+});
+
 customPortsInput.addEventListener('input', function (): void {
   const ports = this.value
     .split(',')
@@ -128,6 +138,20 @@ requestTimeoutInput.addEventListener('input', function (): void {
 debugModeInput.addEventListener('input', function (): void {
   config.set('debugMode', this.checked).then(noop).catch(noop);
 });
+
+config
+  .get('sendToWebPage')
+  .then(value => {
+    sendToWebPageInput.checked = value;
+  })
+  .catch(noop);
+
+config
+  .get('sendToLocalTools')
+  .then(value => {
+    sendToLocalToolsInput.checked = value;
+  })
+  .catch(noop);
 
 config
   .get('customPorts')
