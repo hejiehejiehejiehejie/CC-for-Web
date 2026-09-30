@@ -27,7 +27,7 @@ export class WebPageHost extends Host {
     await Promise.all(
       tabIds.map(async tabId => {
         try {
-          await browser.tabs.sendMessage(tabId, { action: 'cph-task', taskId, payload: data });
+          await browser.tabs.sendMessage(tabId, { action: 'cp-task', taskId, payload: data });
           delivered += 1;
         } catch {
           // 桥接脚本尚未注入（扩展刚重载、标签页没刷新），跳过即可

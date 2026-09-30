@@ -105,8 +105,8 @@ function onContextMenu(info: Menus.OnClickData, tab: Tabs.Tab): void {
   }
 }
 
-const NO_RECEIVER_NOTIFICATION_ID = 'cph-no-receiver';
-const INJECT_FAILED_NOTIFICATION_ID = 'cph-inject-failed';
+const NO_RECEIVER_NOTIFICATION_ID = 'cp-no-receiver';
+const INJECT_FAILED_NOTIFICATION_ID = 'cp-inject-failed';
 
 /** 系统通知的统一出口：通知本身失败（例如用户关掉了通知权限）不影响主流程 */
 async function notify(id: string, message: string): Promise<void> {
@@ -232,7 +232,7 @@ function handleMessage(
   sender: Runtime.MessageSender,
   sendResponse: (response: unknown) => void,
 ): true {
-  if (message.action === 'cph-get-info') {
+  if (message.action === 'cp-get-info') {
     getExtensionInfo()
       .then(info => sendResponse(info))
       .catch(() => sendResponse(null));
@@ -241,7 +241,7 @@ function handleMessage(
   }
 
   // 网页侧（设置面板的投递目标开关）改配置：写成功与否都回 { ok, value }
-  if (message.action === 'cph-set-config') {
+  if (message.action === 'cp-set-config') {
     setConfig(message.key, message.value)
       .then(async ok => sendResponse({ ok, key: message.key, value: ok ? await config.get(message.key) : undefined }))
       .catch(() => sendResponse({ ok: false }));
