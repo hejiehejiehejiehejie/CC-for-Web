@@ -1,5 +1,6 @@
 import type { Menus, Runtime, Tabs } from 'webextension-polyfill';
 import { getHosts } from './hosts/hosts';
+import { TARGET_SITE_PATTERNS } from './hosts/targetSites';
 import { Message, MessageAction } from './models/messaging';
 import { browser } from './utils/browser';
 import { config } from './utils/config';
@@ -227,6 +228,49 @@ async function setConfig(key: unknown, value: unknown): Promise<boolean> {
   return true;
 }
 
+/** 等网页回答「这道题要不要抓」的上限。与 bridge.ts 里的同名上限对齐：加一层保险，
+ *  桥接脚本不在（扩展刚重载、目标站标签页没刷新）时也一定能结算 */
+const NEED_QUERY_TIMEOUT = 2500;
+
+/**
+ * 问目标网站的标签页「这道题要不要抓」。
+ *
+ * 判断权在网页那一侧：它比扩展更清楚「这道题在不在我的工作区里、样例是不是空的」
+ * （扩展没有工作区的可见性）。扩展只负责把页面地址转过去，再把网页的答复汇总回来。
+ *
+ * 同站多开时全问一遍，任意一个说「要」就算要 —— 投递本来也是往所有标签页广播。
+ */
+async function queryPageNeed(url: unknown): Promise<boolean> {
+  if (typeof url !== 'string' || url.length === 0) {
+    return false;
+  }
+
+  const tabs = await browser.tabs.query({ url: TARGET_SITE_PATTERNS });
+  const tabIds = tabs.map(tab => tab.id).filter((id): id is number => typeof id === 'number');
+
+  if (tabIds.length === 0) {
+    return false;
+  }
+
+  const answers = await Promise.all(
+    tabIds.map(async tabId => {
+      try {
+        const response = (await Promise.race([
+          browser.tabs.sendMessage(tabId, { action: 'cp-query-need', payload: { url } }),
+          new Promise<undefined>(resolve => setTimeout(() => resolve(undefined), NEED_QUERY_TIMEOUT)),
+        ])) as { need?: unknown } | undefined;
+
+        return response?.need === true;
+      } catch {
+        // 桥接脚本尚未注入（扩展刚重载、标签页没刷新）：这一页当作「不要」
+        return false;
+      }
+    }),
+  );
+
+  return answers.some(Boolean);
+}
+
 function handleMessage(
   message: Message | any,
   sender: Runtime.MessageSender,
@@ -252,6 +296,19 @@ function handleMessage(
   if (sender.tab) {
     if (message.action === MessageAction.SendTask) {
       sendTask(sender.tab.id, message.payload.messageId, message.payload.message);
+    } else if (message.action === MessageAction.CheckSampleNeeded) {
+      // 自动解析脚本问「这个页面要不要抓」（src/autoParse.ts）：网页说不要就回 url: null
+      queryPageNeed(message.payload?.url)
+        .then(need => sendResponse({ url: need ? message.payload?.url : null }))
+        .catch(() => sendResponse({ url: null }));
+
+      return true;
+    } else if (message.action === MessageAction.RequestAutoParse) {
+      // 样例已经在页面上了：走与点图标 / 按快捷键完全相同的那条链路
+      loadContentScript(sender.tab, null);
+      sendResponse({ ok: true });
+
+      return true;
     } else if (message.action === MessageAction.Fetch) {
       makeRequest(
         sender.tab.id,

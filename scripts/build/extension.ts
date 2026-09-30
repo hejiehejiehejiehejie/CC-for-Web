@@ -2,7 +2,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as esbuild from 'esbuild';
 import { LOCAL_TOOL_ORIGINS } from '../../src/hosts/hosts';
-import { TARGET_SITE_PATTERNS } from '../../src/hosts/targetSites';
+import { AUTO_PARSE_SITE_PATTERNS, TARGET_SITE_PATTERNS } from '../../src/hosts/targetSites';
 import { requiredPermissions } from '../../src/utils/request';
 import { projectRoot } from '../utils';
 import { commonOptions, getBuildDirectory } from './utils';
@@ -38,16 +38,27 @@ await Promise.all(
           // 目标网站：这组 origin 同时也是 content_scripts 的注入范围，且必须覆盖 tabs.query 要过滤的 URL；
           // localhost：向本地工具（VS Code 的 CPH、CP Editor、CHelper 等）POST 需要的 host 权限，
           // 与上游一致放在必选权限里——安装时会多一条「读取您在 localhost 上的数据」提示，但之后不再弹框
-          host_permissions: [...TARGET_SITE_PATTERNS, ...LOCAL_TOOL_ORIGINS],
+          // 来源站点（CF）：自动解析脚本要能在用户打开题目页时读它的 DOM，同时也让后台的
+          // executeScript 注入不必再按站点弹权限框
+          host_permissions: [...TARGET_SITE_PATTERNS, ...AUTO_PARSE_SITE_PATTERNS, ...LOCAL_TOOL_ORIGINS],
 
           // 桥接脚本：在目标网站里把扩展消息转成 window.postMessage，
           // 让网页（拿不到 chrome.runtime）也能收到题目、并握手查询扩展信息。
           // document_start 是为了让网页在 DOMContentLoaded 时握手就能收到回应。
+          //
+          // 自动解析脚本：注入到来源站点，页面加载后自问「这道题要不要抓样例」。
+          // document_idle 是刻意的——它要等的是样例 DOM，document_start 时页面上还什么都没有；
+          // 真正的等待逻辑在脚本内部（见 src/autoParse.ts）
           content_scripts: [
             {
               matches: TARGET_SITE_PATTERNS,
               js: ['js/bridge.js'],
               run_at: 'document_start',
+            },
+            {
+              matches: AUTO_PARSE_SITE_PATTERNS,
+              js: ['js/autoParse.js'],
+              run_at: 'document_idle',
             },
           ],
 
@@ -147,6 +158,7 @@ await Promise.all(
 const options: esbuild.BuildOptions = {
   ...commonOptions,
   entryPoints: [
+    path.resolve(projectRoot, 'src/autoParse.ts'),
     path.resolve(projectRoot, 'src/background.ts'),
     path.resolve(projectRoot, 'src/bridge.ts'),
     path.resolve(projectRoot, 'src/content.ts'),
