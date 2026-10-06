@@ -7,11 +7,78 @@ import { requiredPermissions } from '../../src/utils/request';
 import { projectRoot } from '../utils';
 import { commonOptions, getBuildDirectory } from './utils';
 
-const target = process.argv[2];
+type BrowserId = 'chrome' | 'edge' | 'opera' | 'firefox';
+
+interface BrowserTarget {
+  /** 日志 / 报错里的展示名 */
+  label: string;
+  /** Chromium 系（含 Edge / Opera）用 MV3 的 service worker，Firefox 目前只能用 event page */
+  background: 'service-worker' | 'event-page';
+  /** 可选 host 权限落在哪个字段：Chromium 系是 optional_host_permissions，Firefox 是 optional_permissions */
+  optionalHostPermissionsField: 'optional_host_permissions' | 'optional_permissions';
+  /** 只有 Firefox 需要 */
+  browserSpecificSettings?: Record<string, unknown>;
+}
+
+/**
+ * 支持的构建目标。
+ *
+ * 四个 target 实际只有三个维度不同（见上面接口）。新增浏览器时在这里加一条即可，
+ * 不要退回 `if (target === 'chrome') ... else ...` —— 那样任何漏网的 target 都会
+ * 静默生成 firefox 的 manifest。
+ */
+const BROWSERS: Record<BrowserId, BrowserTarget> = {
+  chrome: {
+    label: 'Chrome',
+    background: 'service-worker',
+    optionalHostPermissionsField: 'optional_host_permissions',
+  },
+  edge: {
+    label: 'Edge',
+    background: 'service-worker',
+    optionalHostPermissionsField: 'optional_host_permissions',
+  },
+  opera: {
+    label: 'Opera',
+    background: 'service-worker',
+    optionalHostPermissionsField: 'optional_host_permissions',
+  },
+  firefox: {
+    label: 'Firefox',
+    background: 'event-page',
+    optionalHostPermissionsField: 'optional_permissions',
+    browserSpecificSettings: {
+      gecko: {
+        // 不用上游的 GUID：AMO 按 ID 认扩展，共用 ID 会在提交时被拒（Duplicate add-on ID）。
+        // 所以这里必须是本 fork 自己的 ID，且一经发布不可再改（换了等于另一个扩展）。
+        id: 'cc-for-web@998244353.best',
+        data_collection_permissions: {
+          required: ['websiteContent'],
+        },
+      },
+    },
+  },
+};
+
+const target = process.argv[2] ?? '';
+const browser = (BROWSERS as Record<string, BrowserTarget | undefined>)[target];
+
+if (!browser) {
+  throw new Error(`Unknown build target "${target}". Expected one of: ${Object.keys(BROWSERS).join(', ')}`);
+}
+
 const isProduction = process.argv[3] === 'true';
 const watch = process.argv[4] === 'true';
 
 const buildDirectory = await getBuildDirectory(target);
+
+// 开发端口只在本地开发时有意义（Vite dev server，端口见站点仓库的 vite.config.js）。
+// 生产包必须剔除：商店审查会追问「一个只服务 Codeforces 和你自己站点的扩展，为什么需要
+// 读取 localhost:5199」，而真实用户根本用不到。注意只能在构建期过滤——targetSites.ts
+// 里的常量是开发态运行时也要用的。
+const DEV_ONLY_SITE_PATTERNS = ['http://localhost:5199/*', 'http://127.0.0.1:5199/*'];
+
+const sitePatterns = TARGET_SITE_PATTERNS.filter(pattern => !isProduction || !DEV_ONLY_SITE_PATTERNS.includes(pattern));
 
 await Promise.all(
   [
@@ -31,7 +98,9 @@ await Promise.all(
           version: packageJson.version,
 
           author: packageJson.author,
-          homepage_url: packageJson.repository,
+          // 商店页的 Website 字段要求指向自己的网站，所以用 package.json 的 homepage
+          // （repository 仍指向上游 fork 源，保留归属）
+          homepage_url: packageJson.homepage,
 
           // notifications：所有接收端都没收到时弹系统通知
           permissions: ['activeTab', 'contextMenus', 'storage', 'scripting', 'notifications'],
@@ -40,7 +109,7 @@ await Promise.all(
           // 与上游一致放在必选权限里——安装时会多一条「读取您在 localhost 上的数据」提示，但之后不再弹框
           // 来源站点（CF）：自动解析脚本要能在用户打开题目页时读它的 DOM，同时也让后台的
           // executeScript 注入不必再按站点弹权限框
-          host_permissions: [...TARGET_SITE_PATTERNS, ...AUTO_PARSE_SITE_PATTERNS, ...LOCAL_TOOL_ORIGINS],
+          host_permissions: [...sitePatterns, ...AUTO_PARSE_SITE_PATTERNS, ...LOCAL_TOOL_ORIGINS],
 
           // 桥接脚本：在目标网站里把扩展消息转成 window.postMessage，
           // 让网页（拿不到 chrome.runtime）也能收到题目、并握手查询扩展信息。
@@ -51,7 +120,7 @@ await Promise.all(
           // 真正的等待逻辑在脚本内部（见 src/autoParse.ts）
           content_scripts: [
             {
-              matches: TARGET_SITE_PATTERNS,
+              matches: sitePatterns,
               js: ['js/bridge.js'],
               run_at: 'document_start',
             },
@@ -103,29 +172,22 @@ await Promise.all(
           },
         };
 
-        if (target === 'chrome') {
-          manifest.optional_host_permissions = optionalHostPermissions;
+        // 可选 host 权限的字段名按浏览器分（见 BROWSERS 表）
+        manifest[browser.optionalHostPermissionsField] = optionalHostPermissions;
 
-          manifest.background = {
-            service_worker: 'js/background.js',
-            type: 'module',
-          };
-        } else {
-          manifest.optional_permissions = optionalHostPermissions;
+        manifest.background =
+          browser.background === 'service-worker'
+            ? {
+                service_worker: 'js/background.js',
+                type: 'module',
+              }
+            : {
+                scripts: ['js/background.js'],
+                type: 'module',
+              };
 
-          manifest.background = {
-            scripts: ['js/background.js'],
-            type: 'module',
-          };
-
-          manifest.browser_specific_settings = {
-            gecko: {
-              id: '{74e326aa-c645-4495-9287-b6febc5565a7}',
-              data_collection_permissions: {
-                required: ['websiteContent'],
-              },
-            },
-          };
+        if (browser.browserSpecificSettings) {
+          manifest.browser_specific_settings = browser.browserSpecificSettings;
         }
 
         return JSON.stringify(manifest, null, 2);

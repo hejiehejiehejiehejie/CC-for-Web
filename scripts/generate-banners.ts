@@ -14,60 +14,61 @@ interface BannerImage {
   pngPath: `${string}.png`;
 }
 
-const horizontalBaseImage: BaseImage = {
-  svg: (baseX, baseY, newWidth, newHeight) => `
-<svg viewBox="0 0 716 200" x="${baseX}" y="${baseY}" width="${newWidth}" height="${newHeight}">
-  <rect width="100%" height="100%" fill="var(--background-color)" />
+/**
+ * 字标与标语。
+ *
+ * 字标必须与 manifest 的 productName 一致——Edge / Chrome 的商店页会把 manifest 名
+ * 自动填进标题，图上的名字与之不符会让审核员以为装错了扩展。
+ *
+ * 字体栈不写单一字体名：本机没装 Ubuntu，Chrome 会退到默认 serif（Times），
+ * 观感与界面里的无衬线完全对不上。列全后备，换机器渲染结果才稳定。
+ */
+const PRODUCT_NAME = 'CC for Web';
+const TAGLINE = 'From Codeforces to your editor';
+const FONT_FAMILY = "Ubuntu, 'Helvetica Neue', Helvetica, Arial, sans-serif";
+
+/** 蓝色圆 + 白色十字的记号，两个方向共用。十字是镂空的，露出底色。 */
+const iconMark = (cx: number, cy: number): string => `
   <g>
-    <circle cx="100" cy="100" r="100" fill="var(--icon-color)" />
+    <circle cx="${cx}" cy="${cy}" r="100" fill="var(--icon-color)" />
     <!--
       Horizontal bar width = circle radius
       Horizontal bar height = circle radius / 4
     -->
-    <rect x="50" y="87.5" width="100" height="25" fill="var(--icon-inner-color)" />
-    <rect x="87.5" y="50" width="25" height="100" fill="var(--icon-inner-color)" />
-  </g>
-  <g>
-    <!-- Horizontal centering is weird with 2 tspans in 1 text -->
-    <text dominant-baseline="middle" text-anchor="middle" fill="var(--text-color)" font-family="Ubuntu" font-size="85px" font-weight="700">
-      <tspan x="460" y="50%" dy="-0.6em">Competitive</tspan>
-    </text>
-    <text dominant-baseline="middle" text-anchor="middle" fill="var(--text-color)" font-family="Ubuntu" font-size="85px" font-weight="700">
-      <tspan x="460" y="50%" dy="0.6em">Companion</tspan>
-    </text>
+    <rect x="${cx - 50}" y="${cy - 12.5}" width="100" height="25" fill="var(--icon-inner-color)" />
+    <rect x="${cx - 12.5}" y="${cy - 50}" width="25" height="100" fill="var(--icon-inner-color)" />
+  </g>`;
+
+// 宽扁画布（1400×560、1280×640、440×280 这类）用横排：图标在左，字标与标语在右
+const horizontalBaseImage: BaseImage = {
+  svg: (baseX, baseY, newWidth, newHeight) => `
+<svg viewBox="0 0 790 200" x="${baseX}" y="${baseY}" width="${newWidth}" height="${newHeight}">
+  <rect width="100%" height="100%" fill="var(--background-color)" />
+  ${iconMark(100, 100)}
+  <g font-family="${FONT_FAMILY}">
+    <text x="240" y="93" fill="var(--text-color)" font-size="72px" font-weight="700">${PRODUCT_NAME}</text>
+    <text x="242" y="147" fill="var(--text-dim-color)" font-size="30px">${TAGLINE}</text>
   </g>
 </svg>
   `,
-  width: 716,
+  width: 790,
   height: 200,
 };
 
+// 方画布（920×680 这类）用竖排：图标在上，字标与标语在下方居中
 const verticalBaseImage: BaseImage = {
   svg: (baseX, baseY, newWidth, newHeight) => `
-<svg viewBox="0 0 420 380" x="${baseX}" y="${baseY}" width="${newWidth}" height="${newHeight}">
+<svg viewBox="0 0 470 430" x="${baseX}" y="${baseY}" width="${newWidth}" height="${newHeight}">
   <rect width="100%" height="100%" fill="var(--background-color)" />
-  <g>
-    <circle cx="210" cy="100" r="100" fill="var(--icon-color)" />
-    <!--
-      Horizontal bar width = circle radius
-      Horizontal bar height = circle radius / 4
-    -->
-    <rect x="160" y="87.5" width="100" height="25" fill="var(--icon-inner-color)" />
-    <rect x="197.5" y="50" width="25" height="100" fill="var(--icon-inner-color)" />
-  </g>
-  <g>
-    <!-- Horizontal centering is weird with 2 tspans in 1 text -->
-    <text dominant-baseline="middle" text-anchor="middle" fill="var(--text-color)" font-family="Ubuntu" font-size="70px" font-weight="700">
-      <tspan x="50%" y="300" dy="-0.6em">Competitive</tspan>
-    </text>
-    <text dominant-baseline="middle" text-anchor="middle" fill="var(--text-color)" font-family="Ubuntu" font-size="70px" font-weight="700">
-      <tspan x="50%" y="300" dy="0.6em">Companion</tspan>
-    </text>
+  ${iconMark(235, 115)}
+  <g font-family="${FONT_FAMILY}" text-anchor="middle">
+    <text x="235" y="312" fill="var(--text-color)" font-size="72px" font-weight="700">${PRODUCT_NAME}</text>
+    <text x="235" y="366" fill="var(--text-dim-color)" font-size="30px">${TAGLINE}</text>
   </g>
 </svg>
   `,
-  width: 420,
-  height: 380,
+  width: 470,
+  height: 430,
 };
 
 async function generateBanner(name: string, width: number, height: number): Promise<BannerImage> {
@@ -95,6 +96,7 @@ async function generateBanner(name: string, width: number, height: number): Prom
     :root {
       --background-color: #303030;
       --text-color: #ffffff;
+      --text-dim-color: #b4b4b4;
       --icon-color: #0e639c;
       --icon-inner-color: var(--background-color);
     }

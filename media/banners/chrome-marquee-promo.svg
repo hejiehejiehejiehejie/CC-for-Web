@@ -4,14 +4,16 @@
     :root {
       --background-color: #303030;
       --text-color: #ffffff;
+      --text-dim-color: #b4b4b4;
       --icon-color: #0e639c;
       --icon-inner-color: var(--background-color);
     }
   </style>
   <rect width="100%" height="100%" fill="var(--background-color)" />
   
-<svg viewBox="0 0 716 200" x="70" y="104.02234636871506" width="1260" height="351.9553072625699">
+<svg viewBox="0 0 790 200" x="70" y="120.50632911392404" width="1260" height="318.9873417721519">
   <rect width="100%" height="100%" fill="var(--background-color)" />
+  
   <g>
     <circle cx="100" cy="100" r="100" fill="var(--icon-color)" />
     <!--
@@ -21,14 +23,9 @@
     <rect x="50" y="87.5" width="100" height="25" fill="var(--icon-inner-color)" />
     <rect x="87.5" y="50" width="25" height="100" fill="var(--icon-inner-color)" />
   </g>
-  <g>
-    <!-- Horizontal centering is weird with 2 tspans in 1 text -->
-    <text dominant-baseline="middle" text-anchor="middle" fill="var(--text-color)" font-family="Ubuntu" font-size="85px" font-weight="700">
-      <tspan x="460" y="50%" dy="-0.6em">Competitive</tspan>
-    </text>
-    <text dominant-baseline="middle" text-anchor="middle" fill="var(--text-color)" font-family="Ubuntu" font-size="85px" font-weight="700">
-      <tspan x="460" y="50%" dy="0.6em">Companion</tspan>
-    </text>
+  <g font-family="Ubuntu, 'Helvetica Neue', Helvetica, Arial, sans-serif">
+    <text x="240" y="93" fill="var(--text-color)" font-size="72px" font-weight="700">CC for Web</text>
+    <text x="242" y="147" fill="var(--text-dim-color)" font-size="30px">From Codeforces to your editor</text>
   </g>
 </svg>
   
