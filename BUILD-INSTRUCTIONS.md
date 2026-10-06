@@ -9,6 +9,25 @@ describes how to reproduce the submitted package from this source tree.
 [Competitive Companion](https://github.com/jmerle/competitive-companion) by
 Jasper van Merle. The submitted file is the **Firefox** build of this repository.
 
+## Build environment
+
+This is the environment the submitted package was actually built in.
+
+| Item | Version / value |
+| --- | --- |
+| Operating system | macOS 27.0 (build 26A428), arm64 (Apple Silicon) |
+| Node.js | v24.16.0 |
+| npm | 11.13.0 (bundled with that Node.js release) |
+| pnpm | used to install dependencies; `pnpm-lock.yaml` is `lockfileVersion: 9.0`, so pnpm 9 or newer |
+| `tsx` | 4.22.4 |
+| `esbuild` | 0.28.1 |
+| `typescript` | 6.0.3 |
+
+There is no native compilation step. Every dependency is pure JavaScript or
+TypeScript, and the only platform-specific binaries are esbuild's prebuilt ones,
+which the package manager selects automatically for your platform. Building on
+Linux or Windows therefore works the same way.
+
 ## Reproduce the build
 
 A pnpm lockfile is committed, so the dependency tree is pinned.
@@ -16,6 +35,13 @@ A pnpm lockfile is committed, so the dependency tree is pinned.
 ```bash
 pnpm install --frozen-lockfile
 pnpm build:firefox
+```
+
+If pnpm is not installed yet:
+
+```bash
+corepack enable
+corepack prepare pnpm@latest --activate
 ```
 
 `build-firefox/` is then exactly the directory that was zipped and submitted.
