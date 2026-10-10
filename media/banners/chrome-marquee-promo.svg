@@ -25,7 +25,7 @@
   </g>
   <g font-family="Ubuntu, 'Helvetica Neue', Helvetica, Arial, sans-serif">
     <text x="240" y="93" fill="var(--text-color)" font-size="72px" font-weight="700">CC for Web</text>
-    <text x="242" y="147" fill="var(--text-dim-color)" font-size="30px">From Codeforces to your editor</text>
+    <text x="242" y="147" fill="var(--text-dim-color)" font-size="30px">From any judge to your editor</text>
   </g>
 </svg>
   

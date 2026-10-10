@@ -16,13 +16,12 @@ export const TARGET_SITE_PATTERNS: string[] = [
 ];
 
 /**
- * 「样例待抓」自动解析脚本的注入范围。注意这是题目**来源**站点，与上面的目标网站不是一回事：
- * 上面的站点是题目投递的目的地，这里是扩展要主动去读 DOM 的站点。
+ * 题目**来源**站点（自动解析脚本的注入范围）的清单不在这里 —— 它由 parser 注册表推导，
+ * 见 src/hosts/sourceSitePatterns.ts，消费方是构建脚本 scripts/build/extension.ts。
  *
- * 目前只列 Codeforces：网页侧的抽题面板只支持 CF，而 CF 的 problemset 接口不返回样例、
- * 题目页面又没带 CORS 头，网页自己 fetch 不到，只能由扩展在页面里读。
+ * 注意来源站点与上面的目标网站不是一回事：上面是题目投递的**目的地**，来源站点是扩展要主动
+ * 读 DOM 的**题目页**。两者混用会让权限声明莫名其妙。
  *
- * 每多列一个站点，就多一份「扩展在你浏览该站时自动读页面」的授权面（安装时 Chrome 会
- * 逐站点提示「读取你在 xxx 上的数据」），所以按需再加，不要顺手把上游支持的一堆 OJ 都列上。
+ * 别把推导结果搬回本文件：本文件被后台脚本（src/background.ts）引用，一旦在这里 import
+ * 注册表，163 个 parser 连同 jszip / pdfjs 都会被并进后台 bundle。
  */
-export const AUTO_PARSE_SITE_PATTERNS: string[] = ['https://codeforces.com/*'];

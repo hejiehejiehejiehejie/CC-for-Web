@@ -12,6 +12,12 @@ declare global {
 }
 
 function createContextMenu(): void {
+  // Firefox for Android 上 contextMenus 整个命名空间不存在（MDN BCD: menus = ff_android false），
+  // 这里也会抛 TypeError，所以先挡一下。桌面端行为不变。
+  if (!browser.contextMenus) {
+    return;
+  }
+
   browser.contextMenus.create({
     id: 'parse-with',
     title: 'Parse with',
@@ -190,6 +196,23 @@ interface ExtensionInfo {
 }
 
 /**
+ * commands 在 Firefox for Android 上也整个不存在（MDN BCD: ff_android = false），
+ * 拿不到就回空数组：握手只要「有 info」就算已安装，快捷键列表为空即可
+ * （安卓本来也没有键盘快捷键可显示）。
+ */
+async function getCommands(): Promise<Array<{ name?: string; description?: string; shortcut?: string }>> {
+  if (!browser.commands) {
+    return [];
+  }
+
+  try {
+    return await browser.commands.getAll();
+  } catch {
+    return [];
+  }
+}
+
+/**
  * 供目标网站通过桥接脚本（src/bridge.ts）握手查询：
  * 版本号用于网站判断扩展是否已安装，commands 用于展示扩展的快捷键绑定，
  * config 是投递目标开关的当前值（网站据此渲染开关状态）。
@@ -198,7 +221,7 @@ interface ExtensionInfo {
  */
 async function getExtensionInfo(): Promise<ExtensionInfo> {
   const [commands, sendToWebPage, sendToLocalTools] = await Promise.all([
-    browser.commands.getAll(),
+    getCommands(),
     config.get('sendToWebPage'),
     config.get('sendToLocalTools'),
   ]);
@@ -327,6 +350,12 @@ function handleMessage(
 }
 
 browser.action.onClicked.addListener(onAction);
-browser.contextMenus.onClicked.addListener(onContextMenu);
 browser.runtime.onMessage.addListener(handleMessage);
 browser.runtime.onInstalled.addListener(createContextMenu);
+
+// 【安卓致命点】Firefox for Android 上 contextMenus 命名空间整个不存在；
+// 顶层直接访问 browser.contextMenus.onClicked 会在模块求值时抛 TypeError，
+// 把上面几条 addListener 一起带走 —— 症状是安卓上握手与抓题全哑（网站显示「未检测到」）。
+if (browser.contextMenus) {
+  browser.contextMenus.onClicked.addListener(onContextMenu);
+}

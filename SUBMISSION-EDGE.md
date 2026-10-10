@@ -36,8 +36,8 @@ Edge 会把 manifest 的 `name` 与 `description` 自动填进商店页，且这
 | manifest 字段 | 当前值 | 出处 |
 | --- | --- | --- |
 | `name` | `CC for Web` | `package.json` 的 `productName` |
-| `description` | `Parses competitive programming problems and sends them to your editor or online judge.` | `package.json` 的 `description` |
-| `version` | `2.66.2` | `package.json` 的 `version` |
+| `description` | `Parses competitive programming problems and sends them to your editor or online judge.` | `package.json` 的 `description`（Firefox 目标例外：manifest 覆盖为带「Fork of Competitive Companion, now also working on Firefox for Android.」的版本，见 `scripts/build/extension.ts` 的 `descriptionOverride`） |
+| `version` | `2.66.3` | `package.json` 的 `version` |
 | `homepage_url` | `https://www.998244353.best/` | `package.json` 的 `homepage`（**不是** `repository`——那个仍指向上游 fork 源，保留归属） |
 | `author` | `Jasper van Merle` | `package.json` 的 `author`（上游作者，fork 归属） |
 
@@ -103,11 +103,18 @@ why. Without it the user sees nothing at all after pressing the shortcut, which
 is indistinguishable from a broken extension.
 ```
 
-**Host permission — `https://codeforces.com/*`**
+**Host permissions — 全部支持的题目站点（约 180 条，例如 `https://codeforces.com/*`、`https://atcoder.jp/*`、`https://www.luogu.com.cn/*`）**
 
 ```text
-Read the problem statement and sample test data from the DOM of the problem page
-the user has open, which is the data the user asked to be parsed.
+Each entry is one online judge whose pages the extension can parse. On these
+sites it reads the problem statement and sample test data from the page the
+user already has open — that is the data the user asked to be parsed. The list
+is derived from the parser registry at build time, one entry per judge domain
+(subdomains are wildcarded where a judge serves problems from them).
+
+On these same sites the extension also runs a small content script that asks
+the user's own judge page whether a sample capture is still pending, and only
+parses when the answer is yes.
 ```
 
 **Host permission — `https://www.998244353.best/*` and `https://998244353.best/*`**
@@ -205,26 +212,35 @@ manifest 的 `description` 会自动填默认语言那一格且只读；Partner 
 **中文（`zh-CN`）**
 
 ```text
-把 Codeforces 的题面与样例一键送进你正在用的编辑器。
+把你正在刷的题目一键送进你正在用的编辑器。
 
-打开题目页，点一下工具栏图标或按 Ctrl+Shift+U，扩展就会解析题面、样例与题目信息，
-投递给下面两个接收端（各自可开关，默认都开）：
+支持上百个在线判题站点（Codeforces、AtCoder、洛谷、AcWing、vjudge 等）。在题目页上，
+既可以点一下工具栏图标或按 Ctrl+Shift+U 手动解析，也可以什么都不做 —— 只要这道题已经在
+你的工作区里且样例还空着，扩展会在你打开题目页时自动把样例补齐。
+
+解析出的题面、样例与题目信息会投递给下面两个接收端（各自可开关，默认都开）：
 
 · 你的在线判题网站：题面、样例、时限、题目链接直接落到工作区，不用复制粘贴；
 · 本机运行的工具：通过 localhost 投递给本机的编辑器插件。
 
 扩展不上传任何数据到开发者服务器：解析结果只在本机与你自己打开的那一页之间传递。
 不收集浏览历史，不做广告，不做埋点。
+
+已在 Firefox for Android（142+）上验证可用 —— 这是相比上游 Competitive Companion 的额外支持，上游只支持桌面浏览器。
 ```
 
 **英文（`en`）**
 
 ```text
-Send a Codeforces problem straight into the editor you are already using.
+Send the problem you are working on straight into the editor you already use.
 
-Open a problem page, click the toolbar icon (or press Ctrl+Shift+U), and the
-extension parses the statement, samples and metadata and delivers them to two
-destinations — each with its own switch, both on by default:
+Works on hundreds of online judges (Codeforces, AtCoder, Luogu, AcWing, vjudge
+and more). On a problem page you can either click the toolbar icon / press
+Ctrl+Shift+U, or do nothing at all — if the problem is already in your workspace
+with empty samples, the extension fills the samples in when you open its page.
+
+The parsed statement, samples and metadata are delivered to two destinations —
+each with its own switch, both on by default:
 
 - your online judge site: statement, samples, time limit and problem link land in
   your workspace, no copy-pasting;
@@ -233,6 +249,9 @@ destinations — each with its own switch, both on by default:
 Nothing is uploaded to the developer's servers. The parsed result travels only
 between your browser and the page you already have open. No browsing history,
 no ads, no analytics.
+
+Verified working on Firefox for Android (142+) — an addition over upstream
+Competitive Companion, which is desktop-only.
 ```
 
 ---
@@ -263,6 +282,40 @@ It does not upload anything to the developer's servers. Parsed data travels only
 between the user's browser, a tool running on the user's own machine (localhost)
 and the user's own judge site.
 
+ABOUT THE CONTENT SCRIPT ON PROBLEM SITES
+On the supported problem sites the extension also injects a small script that
+asks the user's own judge page "is a sample capture still pending for this URL?".
+Unless that page answers yes, the script does nothing at all. This is what makes
+sample capture automatic when the user re-opens a problem page. It is the only
+thing the extension does on those sites without the user clicking anything, and
+it can be disabled per site from the browser's extension settings.
+
+WHICH SITES (this is the same list as upstream Competitive Companion)
+Problem parsers exist for 118 online judges: 33OJ, A2 Online Judge, ACMP, AcWing,
+Aizu Online Judge, Algotester, AlgoZenith, Anarchy Golf, AtCoder, A.Y. Jackson
+Online Judge, Baekjoon Online Judge, BAPS OJ, beecrowd, BJTU OJ, Bloomberg
+CodeCon, BUCTOJ, CodeChef, CodeDrills, Codeforces, CodeMarshal, CodeRun, CodeUp,
+COJ, Contest Hunter, CPython.uz, CS Academy, CSES, CSGOJ, CSU-ACM Online Judge,
+CYEZOJ, Daimayuan Online Judge, Dimik OJ, DMOJ, DOMjudge, DotOJ, Eolymp, ECNU
+Online Judge, FZU Online Judge, Google Coding Competitions, HackerEarth,
+HackerRank, HDOJ, HIT Online Judge, hihoCoder, HKOI Online Judge, HOJ, Hrbust
+Online Judge, Hydro, ICPC Live Archive, InfoArena, ITCoder HUTECH, Jutge, Kattis,
+KEP.uz, Kilonova, Lanqiao, Le Quy Don Online Judge, Library Checker, LibreOJ,
+LightOJ, LSYOI, Luogu, MarisaOJ, Mendo, Meta Coding Competitions, MOI Arena,
+mrJudge, MSK Informatics, NBUT Online Judge, Neps Academy, NerdArena, Newton
+School, NOJ, NowCoder, NYTD Online Judge, oiClass, Olinfo, Olympicode, omegaUp,
+OpenJudge, OTOG, Panda Online Judge, PBInfo, PEG Judge, POJ, PTA, Public Judge,
+QBXTOJ, QDUOJ, QQWhale, RoboContest, SDUT OnlineJudge, SeriousOJ, Sort Me, SPOJ,
+SSOIER, StarryCoding, TheJobOverflow, Timus Online Judge, TLX, Toph, uDebug,
+Universal Cup, UOJ, USACO, USACO Training, UVa Online Judge, Virtual Judge, VNOI
+Online Judge, YACS, Yandex, XXM, X-Camp, yukicoder, Yun Dou Xue Yuan, ZOJ, ZUFEOJ.
+
+The host permissions are the machine-generated expansion of that list: one entry
+per judge domain (118 sites become 180 patterns, because several judges serve
+from mirror domains, some only over http, and a few use a subdomain wildcard).
+The manifest was produced by scripts/build/extension.ts, and the list is derived
+from the parser registry at build time rather than written by hand.
+
 Permissions in plain terms
 - activeTab / scripting: read the current problem page only when the user clicks
   the icon or presses the shortcut, and inject the parser into it.
@@ -270,7 +323,12 @@ Permissions in plain terms
 - storage: remember the user's two delivery switches.
 - notifications: explain failures (otherwise the shortcut looks like it did
   nothing).
-- codeforces.com host permission: read the statement and samples from the page.
+- problem-site host permissions (about 180 patterns, covering the 118 judges listed
+  above): read the statement and samples from the problem page the user has open,
+  and run the pending-sample check described above. One of them is deliberately
+  narrower than its site: Meta Coding Competitions lives on www.facebook.com, so
+  that entry is scoped to /codingcompetitions/*/problems/* rather than the whole
+  domain.
 - 998244353.best host permission: deliver the parsed problem into the user's own
   judge site.
 - localhost host permission: deliver to a tool the user runs on their own machine.
@@ -435,4 +493,4 @@ npm run screenshots:store
 - **`author` 仍是上游作者** `Jasper van Merle`：这是 MIT fork 的归属声明，建议保留；若 Partner Center 的开发者名与之不一致，审核员可能会问，届时按「fork 关系」如实解释即可。
 - **截图**：第 3 张（站点工作区）已能脚本生成（第 5.1.3 节，4 张备选在站点仓库的 `screenshots/`）。
   第 1、2 张（工具栏图标、系统通知）只能真机手拍，操作单见第 5.1.1 / 5.1.2 节 —— **这是还挡着提交的唯一实体物料**。
-- **宣传图上的标语是英文且写死了**：`TAGLINE = 'From Codeforces to your editor'`，与商店页的中英双语文案不是同一套。若要按语言分别出图，需要给 `generate-banners.ts` 加一层语言参数。
+- **宣传图上的标语是英文且写死了**：`TAGLINE = 'From any judge to your editor'`，与商店页的中英双语文案不是同一套。若要按语言分别出图，需要给 `generate-banners.ts` 加一层语言参数。

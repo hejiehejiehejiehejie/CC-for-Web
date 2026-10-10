@@ -24,7 +24,10 @@ interface BannerImage {
  * 观感与界面里的无衬线完全对不上。列全后备，换机器渲染结果才稳定。
  */
 const PRODUCT_NAME = 'CC for Web';
-const TAGLINE = 'From Codeforces to your editor';
+// 标语要与实际能力一致：扩展现在覆盖上百个判题站，写死某一个站会低估它。
+// 长度刻意与原句（'From Codeforces to your editor'）持平——竖版画布只有 470 宽，
+// 字号 30px 下再长就会顶到边缘。
+const TAGLINE = 'From any judge to your editor';
 const FONT_FAMILY = "Ubuntu, 'Helvetica Neue', Helvetica, Arial, sans-serif";
 
 /** 蓝色圆 + 白色十字的记号，两个方向共用。十字是镂空的，露出底色。 */
