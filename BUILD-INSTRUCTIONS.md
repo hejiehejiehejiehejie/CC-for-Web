@@ -23,17 +23,12 @@ This is the environment the submitted package was actually built in.
 | `esbuild` | 0.28.1 |
 | `typescript` | 6.0.3 |
 
-There is no native compilation step. Every dependency is pure JavaScript or
-TypeScript, and the only platform-specific binaries are esbuild's prebuilt ones,
-which the package manager selects automatically for your platform. Building on
-Linux or Windows therefore works the same way.
-
 ## Reproduce the build
 
 A pnpm lockfile is committed, so the dependency tree is pinned.
 
 ```bash
-pnpm install --frozen-lockfile
+pnpm install --frozen-lockfile --ignore-scripts
 pnpm build:firefox
 ```
 
@@ -45,6 +40,31 @@ corepack prepare pnpm@latest --activate
 ```
 
 `build-firefox/` is then exactly the directory that was zipped and submitted.
+
+### Why `--ignore-scripts` is required
+
+Two dev dependencies try to do native work in their install scripts, and neither
+is needed to build the extension:
+
+- `canvas` (reached through `jest-environment-jsdom`) compiles a native addon
+  against the system cairo library. There is no prebuilt binary for current Node
+  releases, so it falls back to `node-gyp` and fails on a machine without the
+  cairo development headers.
+- `puppeteer` downloads a Chromium build in its postinstall step.
+
+`pnpm-workspace.yaml` allows both scripts, so a plain
+`pnpm install --frozen-lockfile` aborts with
+`ERR_PNPM_EXECUTOR_LIFECYCLE_SCRIPT_FAILED`; and because pnpm re-checks the
+dependency state before every `pnpm run`, `pnpm build:firefox` then fails the
+same way. `--ignore-scripts` skips both.
+
+Skipping install scripts does not affect the build: the only platform-specific
+binaries it needs are esbuild's, and those arrive through esbuild's
+`optionalDependencies` (`@esbuild/<platform>-<arch>`) rather than through a
+script, so building on Linux or Windows works the same way. The two skipped
+scripts matter only to developer-side tasks that are not part of the submitted
+build: the headless test run (`pnpm test`) and the store graphics generator
+(`pnpm generate-banners`).
 
 The package scripts are thin wrappers; the same build without pnpm:
 
