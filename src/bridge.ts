@@ -8,21 +8,36 @@ import { browser } from './utils/browser';
  *   - 扩展 -> 页面：background / WebPageHost 发来的 cp-task，转成 window.postMessage；
  *     以及 cp-query-need（问「这道题的样例是不是空的」）
  *   - 页面 -> 扩展：cp-ping（查扩展信息，回 cp-info）、cp-set-config（改投递开关）、
- *     cp-need-answer（回答上面那一问）
+ *     cp-need-answer（回答上面那一问）、cp-fill-code（请扩展去 Codeforces 代填验证码，
+ *     回 cp-fill-code-result）、cp-cf-check（问「这个浏览器在 Codeforces 上登的是不是你填的
+ *     那个 handle」，回 cp-cf-check-result）
  *
  * 信封格式（与网站侧 src/composables/useCompanionBridge.js 约定一致）：
  *   扩展 -> 页面 { source: 'competitive-companion', type, ... }
  *   页面 -> 扩展 { source: 'cp-page', type, ... }
  *
  * 【跨仓契约】下面这批消息名（cp-page / cp-task / cp-ping / cp-get-info / cp-info /
- * cp-set-config / cp-config / cp-query-need / cp-need-answer）2026-10-01 与网站一起从 `cph-`
- * 前缀改成 `cp-`。改任何一条都必须同步改网站侧 useCompanionBridge.js 并同时发新版，
+ * cp-set-config / cp-config / cp-query-need / cp-need-answer / cp-fill-code /
+ * cp-fill-code-result / cp-cf-check / cp-cf-check-result）2026-10-01 与网站一起从 `cph-` 前缀
+ * 改成 `cp-`。改任何一条都必须同步改网站侧 useCompanionBridge.js 并同时发新版，
  * 否则新旧两边互相认不出、抓题直接失联。
  *
  * 【cp-query-need 这一对】「用户打开题目页时要不要自动抓样例」不再看扩展存的那份名单
  * （2026-10-01 起名单已删），改成**问网页**：工作区里按 url 认得出这道题、且它的样例为空，
  * 才值得抓。于是这里是一问一答的往返，用 queryId 配对；网页没应答（不是新版网站、
  * 或页面正忙）就按「不用抓」收场，绝不把用户的题目页卡住。
+ *
+ * 【cp-fill-code 这一对是 2026-10-11 新加的】网页请扩展去 Codeforces 代填云同步的验证码
+ * （只在用户点那颗按钮时发生，不轮询、不后台自动跑）。这一条**只有请求与结果**，中间那趟
+ * 「打开 Codeforces、填 Last name、保存」全在后台与 src/fillCode.ts 里，网页看不到也拿不到
+ * 任何 Codeforces 凭据 —— 详细边界见那个文件开头。
+ *
+ * 【cp-cf-check 这一对同样是 2026-10-11 新加的】网页问「这个浏览器在 Codeforces 上登的是不是
+ * 我填的那个 handle」，好让取码界面**提前**说清代填能不能成，而不是让用户白点一次。
+ * 关键是：**只回 match / mismatch / not-logged-in / unknown 四个枚举，不回用户名** ——
+ * handle 明文本来就是网页自己填的，所以这个回答里**没有任何网页原本不知道的信息**。
+ * 比对在后台拿会话级缓存做，见 background.ts 的 Codeforces 登录态那一段。
+ * 这一对同样受 `capabilities` 保护（老扩展没有 cf-check，网页就不问）。
  */
 
 const PAGE_SOURCE = 'cp-page';
@@ -101,6 +116,8 @@ window.addEventListener('message', (event: MessageEvent) => {
         value?: unknown;
         queryId?: string;
         need?: unknown;
+        handle?: string;
+        code?: string;
       }
     | undefined;
   if (data?.source !== PAGE_SOURCE) {
@@ -136,6 +153,29 @@ window.addEventListener('message', (event: MessageEvent) => {
       pendingNeedQueries.delete(data.queryId);
       settle(data.need === true);
     }
+
+    return;
+  }
+
+  // 网页请扩展去 Codeforces 代填验证码：整趟搬运都在后台与 fillCode 脚本里，这里只递请求、递结果。
+  // 后台失联时回一个不带 reason 的失败 —— 网站侧会把认不出的原因折成「请手动填写」那句兜底
+  if (data.type === 'cp-fill-code') {
+    browser.runtime
+      .sendMessage({ action: 'cp-fill-code', handle: data.handle, code: data.code })
+      .then(result => postToPage('cp-fill-code-result', { requestId, ...(result as object) }))
+      .catch(() => postToPage('cp-fill-code-result', { requestId, ok: false }));
+
+    return;
+  }
+
+  // 网页问「这个浏览器在 Codeforces 上登的是不是我填的那个 handle」。后台只回一个枚举，
+  // 这里照原样递回去 —— 桥不解释、也不缓存，答案的新鲜度由后台的会话缓存负责。
+  // 后台失联时回 unknown：网站侧会当作「不知道」，界面退回改动前的样子
+  if (data.type === 'cp-cf-check') {
+    browser.runtime
+      .sendMessage({ action: 'cp-cf-check', handle: data.handle })
+      .then(result => postToPage('cp-cf-check-result', { requestId, ...(result as object) }))
+      .catch(() => postToPage('cp-cf-check-result', { requestId, status: 'unknown' }));
   }
 });
 

@@ -23,7 +23,15 @@
  *     （说明懒加载 / 客户端渲染已经收尾）、且页面上确实有像样例的元素（pre / textarea /
  *     code / table）。这是启发式，宁可判「没好」也不能判「好了但其实是空的」。
  * 两层都受 SAMPLE_TIMEOUT 约束，超时就放弃这次，用户重开页面还能再试。
+ *
+ * 【捎带回报登录态】本脚本的注入面是**整个来源站点域**（Codeforces 那条是
+ * `https://codeforces.com/*`，不只有题目页），所以用户只要在浏览器里开过任意一个 Codeforces
+ * 页面，它就已经在场了。顺手读一次页面上公开可见的登录用户名报给后台（由后台存进会话级缓存），
+ * 网站的云同步面板就能提前说清「这个浏览器登的是不是你」——不必等用户白点一次代填才报错。
+ * 这一趟**不发任何请求、不开标签页、不读 cookie**，判据见 src/cfIdentity.ts；只认正牌
+ * codeforces.com，镜像不认（那边是另一套会话）。
  */
+import { currentHandle, hasLoginForm, isCodeforcesSite } from './cfIdentity';
 import { MessageAction } from './models/messaging';
 import { browser } from './utils/browser';
 import { noop } from './utils/noop';
@@ -121,7 +129,31 @@ async function getNeededUrl(): Promise<string | null> {
   }
 }
 
+/**
+ * 捎带把「这个浏览器在 Codeforces 上登的是谁」报给后台，由它存进会话级缓存。
+ *
+ * fire-and-forget：回报失败（后台没醒、扩展刚更新过）只是让网站那边退回 unknown，
+ * 与这次抓题毫无关系，绝不能因为它影响页面。
+ *
+ * 只在正牌 codeforces.com 上做，且**每个页面加载只报一次** —— 这是极廉价的一读一报，
+ * 后台还会按值去重，不会因为用户在 CF 上多开几页而反复写缓存。
+ */
+function reportCfIdentity(): void {
+  if (!isCodeforcesSite()) {
+    return;
+  }
+
+  browser.runtime
+    .sendMessage({
+      action: MessageAction.ReportCfIdentity,
+      payload: { handle: currentHandle(), loggedOut: hasLoginForm() },
+    })
+    .catch(noop);
+}
+
 async function main(): Promise<void> {
+  reportCfIdentity();
+
   const neededUrl = await getNeededUrl();
   if (neededUrl === null) {
     return;

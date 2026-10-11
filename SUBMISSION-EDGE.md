@@ -37,7 +37,7 @@ Edge 会把 manifest 的 `name` 与 `description` 自动填进商店页，且这
 | --- | --- | --- |
 | `name` | `CC for Web` | `package.json` 的 `productName` |
 | `description` | `Parses competitive programming problems and sends them to your editor or online judge.` | `package.json` 的 `description`（Firefox 目标例外：manifest 覆盖为带「Fork of Competitive Companion, now also working on Firefox for Android.」的版本，见 `scripts/build/extension.ts` 的 `descriptionOverride`） |
-| `version` | `2.66.3` | `package.json` 的 `version` |
+| `version` | `2.66.4` | `package.json` 的 `version` |
 | `homepage_url` | `https://www.998244353.best/` | `package.json` 的 `homepage`（**不是** `repository`——那个仍指向上游 fork 源，保留归属） |
 | `author` | `Jasper van Merle` | `package.json` 的 `author`（上游作者，fork 归属） |
 
@@ -89,9 +89,10 @@ whether to send to the web judge). No problem content or personal data is stored
 **`scripting`**
 
 ```text
-Inject the extension's own parsing/bridge script into supported pages: an
-optional auto-parse script on the problem site, and a bridge script on the user's
-own judge site so the page can receive the parsed problem. This is how the
+Inject the extension's own scripts into supported pages: an optional auto-parse
+script on the problem site, a bridge script on the user's own judge site so the
+page can receive the parsed problem, and a fill-in script on one Codeforces
+settings page (see the separate host permission below). This is how the
 extension delivers its single purpose; no remote code is injected.
 ```
 
@@ -133,6 +134,19 @@ machine-local request to a server the user is running; nothing leaves the user's
 computer.
 ```
 
+**Host permission — `https://codeforces.com/settings/social*`**
+
+```text
+One settings page on Codeforces, and only that path. This entry is not part of
+the parser registry: when the user clicks the fill-in button on the companion web
+judge at 998244353.best, the extension writes that site's verification code into
+the Last name field of this page and saves it. This is the automated form of a
+step the judge otherwise asks the user to do by hand; it is what proves the
+Codeforces account belongs to them. The extension fills only that one field,
+reads no cookies or credentials, returns nothing but a short status, and never
+acts unless the user clicks that button.
+```
+
 **Optional host permissions — `https://codejam.googleapis.com/dashboard/get_file/*`, `https://api.tlx.toki.id/v2/*`, `https://resources.beecrowd.com/*`**
 
 ```text
@@ -156,24 +170,35 @@ statement data (not executable code) from the sites listed above.
 
 ### 2.4 Data usage（数据用途）
 
-要点（对着 Partner Center 的复选框与说明框如实勾选）：
+要点（对着 Partner Center 的复选框与说明框如实勾选）。**2.66.4 这一节有实质改动，别再用 2.66.3 的旧稿**：新增了两件事 —— 预检（用户没点图标时读页面头那枚公开的 handle 链接）与代填（往 Codeforces 设置页写一格并提交），所以原文那句「只在用户调用那一刻读当前页」已经与实际不符。
 
 ```text
-Data handled: the URL of the current tab (read only at the moment the user
-invokes the extension) and the statement/sample text of the problem page the
-user is viewing.
+Data handled:
+- the URL of the current tab, read when the user invokes the extension;
+- the statement and sample text of the problem page the user is viewing. On
+  Codeforces problem pages this is also read automatically, to fill in the
+  samples when the problem is already open in the user's workspace;
+- on Codeforces pages, the publicly visible handle link in the page header. It is
+  compared locally with the handle the user typed on the judge, and only a yes/no
+  answer is returned — never the handle itself, never a cookie, session token or
+  any other credential.
 
 Where it goes: only to the destination the user chose — a tool running on the
 user's own machine over localhost, or the user's own judge site. No data is sent
 to the publisher's servers.
 
+Writes: when the user clicks the fill-in button on the judge site, the extension
+writes the judge's verification code into the Last name field of the Codeforces
+Social settings page and submits it. The value written comes from the judge, not
+from browsing data, and this write never happens without that click.
+
 Retention: the extension keeps no server-side copy and does not persist problem
 content. Delivery preferences are the only thing stored, locally, in the
 browser.
 
-Not collected: personally identifying information, authentication credentials,
-health or financial data, location, browsing history beyond the single current
-tab URL used at invocation time.
+Not collected: personally identifying information, authentication credentials
+(no cookie, token or password is ever read), health or financial data, location,
+browsing history beyond the current tab URL used at invocation time.
 
 Not done: no selling, renting, or sharing of data with third parties; no
 advertising; no analytics or profiling.
@@ -209,6 +234,8 @@ https://www.998244353.best/privacy.html
 
 manifest 的 `description` 会自动填默认语言那一格且只读；Partner Center 的 **Details for `<language>`** 允许按语言补充。下面两段是备用稿：
 
+> **这两段只给 Edge 用。** AMO 上的摘要与描述是另一套（AMO 不会从 manifest 自动填描述），放在 `SUBMISSION-AMO.md`。2026-10-10 曾把这里误当成 AMO 的文案出处，别再来一次。
+
 **中文（`zh-CN`）**
 
 ```text
@@ -222,6 +249,11 @@ manifest 的 `description` 会自动填默认语言那一格且只读；Partner 
 
 · 你的在线判题网站：题面、样例、时限、题目链接直接落到工作区，不用复制粘贴；
 · 本机运行的工具：通过 localhost 投递给本机的编辑器插件。
+
+若用的是本站的在线判题网站，扩展还替你跑完登录里 Codeforces 那一步：先说清这个浏览器登录的
+是不是你填的那个账号（本地比对，只回「是 / 不是 / 没登录 / 不知道」，不回传 handle，也不碰
+cookie），再在你点按时代填验证码 —— 把码写进 Codeforces 设置页的 Last name 字段并保存。
+它只写这一格，不读、也不上传任何凭据。
 
 扩展不上传任何数据到开发者服务器：解析结果只在本机与你自己打开的那一页之间传递。
 不收集浏览历史，不做广告，不做埋点。
@@ -245,6 +277,14 @@ each with its own switch, both on by default:
 - your online judge site: statement, samples, time limit and problem link land in
   your workspace, no copy-pasting;
 - a tool on your own machine: delivered over localhost to editor extensions.
+
+If you use the judge site from this publisher, the extension also handles the one
+part of its sign-in that happens on Codeforces: it tells the site whether this
+browser is signed in as the account you entered (compared locally; only a yes/no
+answer is returned, never the handle, never a cookie), and on your click it
+writes the site's verification code into the Last name field of your Codeforces
+settings page and saves it. It fills that one field only and reads no
+credentials.
 
 Nothing is uploaded to the developer's servers. The parsed result travels only
 between your browser and the page you already have open. No browsing history,
@@ -290,6 +330,15 @@ sample capture automatic when the user re-opens a problem page. It is the only
 thing the extension does on those sites without the user clicking anything, and
 it can be disabled per site from the browser's extension settings.
 
+ABOUT THE SCRIPT ON THE CODEFORCES SETTINGS PAGE
+One more content script is registered for a single URL:
+https://codeforces.com/settings/social*. It does nothing until the user clicks the
+fill-in button on 998244353.best, at which point it writes that site's
+verification code into the Last name field of the page and saves it. It is the
+automated form of a step the site asks the user to do by hand otherwise. It reads
+no cookies, returns no page content, and cannot be triggered by the Codeforces
+page itself.
+
 WHICH SITES (this is the same list as upstream Competitive Companion)
 Problem parsers exist for 118 online judges: 33OJ, A2 Online Judge, ACMP, AcWing,
 Aizu Online Judge, Algotester, AlgoZenith, Anarchy Golf, AtCoder, A.Y. Jackson
@@ -317,8 +366,8 @@ The manifest was produced by scripts/build/extension.ts, and the list is derived
 from the parser registry at build time rather than written by hand.
 
 Permissions in plain terms
-- activeTab / scripting: read the current problem page only when the user clicks
-  the icon or presses the shortcut, and inject the parser into it.
+- activeTab / scripting: read the current problem page when the user clicks the
+  icon or presses the shortcut, and inject the extension's own scripts.
 - contextMenus: add one "Parse this problem" right-click item on supported sites.
 - storage: remember the user's two delivery switches.
 - notifications: explain failures (otherwise the shortcut looks like it did
@@ -332,6 +381,9 @@ Permissions in plain terms
 - 998244353.best host permission: deliver the parsed problem into the user's own
   judge site.
 - localhost host permission: deliver to a tool the user runs on their own machine.
+- codeforces.com/settings/social host permission (1 pattern, not part of the
+  parser registry): let the user's judge site write its verification code into the
+  Last name field of that one page, only on an explicit click.
 ```
 
 ---
@@ -489,7 +541,7 @@ npm run screenshots:store
 
 ## 9. 未决事项
 
-- **扩展仓库与站点仓库的版本号对不上**：扩展是 `2.66.2`，站点 `HANDOFF.md` 里记录的 `EXTENSION_VERSION` 是 `2.66.0`。上架后站点分发包（`public/extension/cc-for-web-<版本>.zip`）要不要一并跟进多浏览器版本、以及新包的文件命名规则，尚未决定。
+- **扩展仓库与站点仓库的版本号**：2026-10-11 起两边已对齐（都是 `2.66.3`；下一版 `2.66.4` 已起稿、尚未提交）。站点分发包（`public/extension/cc-for-web-<版本>.zip`）要不要一并跟进多浏览器版本、以及新包的文件命名规则，仍未决定。
 - **`author` 仍是上游作者** `Jasper van Merle`：这是 MIT fork 的归属声明，建议保留；若 Partner Center 的开发者名与之不一致，审核员可能会问，届时按「fork 关系」如实解释即可。
 - **截图**：第 3 张（站点工作区）已能脚本生成（第 5.1.3 节，4 张备选在站点仓库的 `screenshots/`）。
   第 1、2 张（工具栏图标、系统通知）只能真机手拍，操作单见第 5.1.1 / 5.1.2 节 —— **这是还挡着提交的唯一实体物料**。

@@ -98,6 +98,18 @@ const DEV_ONLY_SITE_PATTERNS = ['http://localhost:5199/*', 'http://127.0.0.1:519
 
 const sitePatterns = TARGET_SITE_PATTERNS.filter(pattern => !isProduction || !DEV_ONLY_SITE_PATTERNS.includes(pattern));
 
+/**
+ * 代填验证码脚本（src/fillCode.ts）的注入范围，2026-10-11 新增。
+ *
+ * 只有 Codeforces 的 Social 设置页 —— 云同步那枚验证码要填的 Last name 只在这一页上。
+ * 【为什么不跟着 sourceSitePatterns 走】那份是「需要读 DOM 抓样例的题目页」，
+ * 由 parser 注册表推导（都是 contest / problemset / gym 这类题目路径）。一个设置页并进去，
+ * 既让「自动解析」的注入面毫无必要地变大，也让那份推导多出一条与抓题无关的账。
+ * 【为什么必须单独声明权限】Social 页不在任何 parser 的路径里，不声明的话
+ * host_permissions 覆盖不到它，后台的 tabs.query 与 executeScript 都会失败。
+ */
+const FILL_CODE_SITE_PATTERNS = ['https://codeforces.com/settings/social*'];
+
 // 题目**来源**站点：从 parser 注册表推导（见 src/hosts/sourceSitePatterns.ts），不再手写。
 // 这里顶层 import 注册表是安全的——构建脚本本来就会加载全部 parser（见 scripts/build/utils.ts），
 // 构建产物里不会因此多出任何东西。
@@ -105,7 +117,9 @@ const sourceSitePatterns = getSourceSitePatterns(parsers);
 
 // host_permissions 里三个来源可能重叠（比如自家站点、来源站点、localhost 工具），
 // 去重是为了让生成物可读、diff 可审；重复项本身不影响扩展行为。
-const hostPermissions = [...new Set([...sitePatterns, ...sourceSitePatterns, ...LOCAL_TOOL_ORIGINS])];
+const hostPermissions = [
+  ...new Set([...sitePatterns, ...sourceSitePatterns, ...FILL_CODE_SITE_PATTERNS, ...LOCAL_TOOL_ORIGINS]),
+];
 
 // 匹配模式写错不是「这一条失效」，而是整个扩展加载失败（带端口的写法在 Firefox 上就是如此，
 // 见 sourceSitePatterns.ts）。校验只用推导出来的那一份——它由注册表汇总而成，是最可能溜进
@@ -168,6 +182,14 @@ await Promise.all(
             {
               matches: sourceSitePatterns,
               js: ['js/autoParse.js'],
+              run_at: 'document_idle',
+            },
+            // 代填验证码：只在 Codeforces 的 Social 设置页上待命（见 FILL_CODE_SITE_PATTERNS）。
+            // document_idle 与自动解析一致 —— 表单是服务端渲染的，等到 DOM 稳了再待命最省事，
+            // 它平时什么都不做，只在后台要求时填一次。
+            {
+              matches: FILL_CODE_SITE_PATTERNS,
+              js: ['js/fillCode.js'],
               run_at: 'document_idle',
             },
           ],
@@ -269,6 +291,7 @@ const options: esbuild.BuildOptions = {
     path.resolve(projectRoot, 'src/background.ts'),
     path.resolve(projectRoot, 'src/bridge.ts'),
     path.resolve(projectRoot, 'src/content.ts'),
+    path.resolve(projectRoot, 'src/fillCode.ts'),
     path.resolve(projectRoot, 'src/options.ts'),
   ],
   outdir: path.resolve(buildDirectory, 'js'),
