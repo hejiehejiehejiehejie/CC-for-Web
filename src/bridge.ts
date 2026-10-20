@@ -18,9 +18,16 @@ import { browser } from './utils/browser';
  *
  * 【跨仓契约】下面这批消息名（cp-page / cp-task / cp-ping / cp-get-info / cp-info /
  * cp-set-config / cp-config / cp-query-need / cp-need-answer / cp-fill-code /
- * cp-fill-code-result / cp-cf-check / cp-cf-check-result）2026-10-01 与网站一起从 `cph-` 前缀
+ * cp-fill-code-result / cp-fill-code-saved / cp-cf-check / cp-cf-check-result /
+ * cp-scrape-contest / cp-scrape-contest-done）2026-10-01 与网站一起从 `cph-` 前缀
  * 改成 `cp-`。改任何一条都必须同步改网站侧 useCompanionBridge.js 并同时发新版，
  * 否则新旧两边互相认不出、抓题直接失联。
+ *
+ * 【cp-scrape-contest 这一对是 2026-10-19 新加的】网页请扩展**整场**抓样例：给它一个
+ * `/contest/{id}/problems` 地址，扩展在后台开一个不激活的标签页读一遍，解析结果仍走
+ * 既有的 cp-task 逐题投递 —— 网页不必为「补样例」再造一条入库路径。
+ * 请求只回「开跑没有」（`accepted`），真正的成败由 cp-scrape-contest-done 广播回来；
+ * 受 `capabilities` 里的 `contest-batch` 保护（老扩展没有这条能力，网页就不显示那颗按钮）。
  *
  * 【cp-query-need 这一对】「用户打开题目页时要不要自动抓样例」不再看扩展存的那份名单
  * （2026-10-01 起名单已删），改成**问网页**：工作区里按 url 认得出这道题、且它的样例为空，
@@ -31,6 +38,12 @@ import { browser } from './utils/browser';
  * （只在用户点那颗按钮时发生，不轮询、不后台自动跑）。这一条**只有请求与结果**，中间那趟
  * 「打开 Codeforces、填 Last name、保存」全在后台与 src/fillCode.ts 里，网页看不到也拿不到
  * 任何 Codeforces 凭据 —— 详细边界见那个文件开头。
+ *
+ * 【cp-fill-code-saved 是 2026-10-20 加的】上面那条只回答「字填进去了没有」，可网页要接着
+ * 验证，就得知道**保存到底落下去没有**（它自己猜不出来）。这条由后台在「提交那一趟跳转
+ * 走完」之后广播回来（`saved` 布尔），网页拿它当「可以验了」的发令枪；扩展顺手把自己开的
+ * 那个 Codeforces 标签页收掉。受 `capabilities` 里的 `fill-saved` 保护 —— 老扩展不发这条，
+ * 网页就照旧让用户自己点验证。
  *
  * 【cp-cf-check 这一对同样是 2026-10-11 新加的】网页问「这个浏览器在 Codeforces 上登的是不是
  * 我填的那个 handle」，好让取码界面**提前**说清代填能不能成，而不是让用户白点一次。
@@ -88,6 +101,12 @@ function onExtensionMessage(
 
   if (task?.action === 'cp-task') {
     postToPage('cp-task', { taskId: task.taskId, payload: task.payload });
+  } else if (task?.action === 'cp-scrape-contest-done') {
+    // 整场抓取收尾：原样转给网页（requestId 由它配对，这里不解释也不缓存）
+    postToPage('cp-scrape-contest-done', { ...(task.payload ?? {}) });
+  } else if (task?.action === 'cp-fill-code-saved') {
+    // 代填收尾（保存落下去没有 + 那一页已经收掉）：同样原样转给网页，requestId 由它配对
+    postToPage('cp-fill-code-saved', { ...(task.payload ?? {}) });
   } else if (task?.action === 'cp-query-need') {
     // 答案在网页那边（工作区是它的数据），这里只负责把问题递过去、把答案递回来
     askPageNeed(String(task.payload?.url ?? ''))
@@ -118,6 +137,7 @@ window.addEventListener('message', (event: MessageEvent) => {
         need?: unknown;
         handle?: string;
         code?: string;
+        url?: string;
       }
     | undefined;
   if (data?.source !== PAGE_SOURCE) {
@@ -158,12 +178,38 @@ window.addEventListener('message', (event: MessageEvent) => {
   }
 
   // 网页请扩展去 Codeforces 代填验证码：整趟搬运都在后台与 fillCode 脚本里，这里只递请求、递结果。
-  // 后台失联时回一个不带 reason 的失败 —— 网站侧会把认不出的原因折成「请手动填写」那句兜底
+  // 后台失联时回一个不带 reason 的失败 —— 网站侧会把认不出的原因折成「请手动填写」那句兜底。
+  // requestId 一并带过去：后台收尾时要用它把 cp-fill-code-saved 指回这一轮（见文件头）
   if (data.type === 'cp-fill-code') {
     browser.runtime
-      .sendMessage({ action: 'cp-fill-code', handle: data.handle, code: data.code })
+      .sendMessage({ action: 'cp-fill-code', requestId, handle: data.handle, code: data.code })
       .then(result => postToPage('cp-fill-code-result', { requestId, ...(result as object) }))
       .catch(() => postToPage('cp-fill-code-result', { requestId, ok: false }));
+
+    return;
+  }
+
+  // 网页请扩展整场抓样例。只回「开跑没有」：真正的成败由后台广播
+  // cp-scrape-contest-done 回来。后台拒收（没有可用档期 / 地址不合法）时也走同一条
+  // 结果消息，网页侧于是只认一个结果通道、不必分辨两种回包
+  if (data.type === 'cp-scrape-contest') {
+    browser.runtime
+      .sendMessage({ action: 'cp-scrape-contest', requestId, url: data.url })
+      .then(result => {
+        const reply = result as { accepted?: boolean; reason?: string } | undefined;
+
+        if (reply?.accepted !== true) {
+          postToPage('cp-scrape-contest-done', {
+            requestId,
+            ok: false,
+            count: 0,
+            reason: reply?.reason ?? 'failed',
+          });
+        }
+      })
+      .catch(() =>
+        postToPage('cp-scrape-contest-done', { requestId, ok: false, count: 0, reason: 'failed' }),
+      );
 
     return;
   }

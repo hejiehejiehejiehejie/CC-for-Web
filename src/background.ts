@@ -186,6 +186,191 @@ async function makeRequest(
   }
 }
 
+// ------------------------------------------------------------ 整场抓样例（网页发起）
+//
+// 【干什么】网页把一场比赛的题目列表地址（`/contest/{id}/problems`）递过来，这里开一个
+// **不激活的标签页**把它读一遍，解析结果照常逐题投递给网页 —— 网页那边不需要为「补样例」
+// 再造一条入库路径，收到题目就按 url 并进已有的题里（见站点侧 importProblem）。
+//
+// 【为什么非要在扩展里做】Codeforces 的题目页没有 CORS 头，网页 fetch 不到 HTML；而整场题面
+// 在这一页上就全都在（实测 2276：7 个 `.problem-frames > div`、7 组 `.input pre`），
+// 所以只要有一个带用户登录态的浏览器上下文读一遍就够了。
+//
+// 【为什么开标签页而不是后台直接 fetch】解析器要 `DOMParser` 与真实 DOM 选择器，而 MV3 的
+// service worker 里没有 DOM。开一个 active:false 的标签页拿到的是真实渲染结果，Cloudflare
+// 挑战也交给浏览器自己去过 —— 这两件在后台 fetch 里都做不到。
+//
+// 【进度与收尾靠什么】解析完由 content.js 逐题 `.send()`，每题一条 SendTask 回到这里；
+// 这里数着条数，凑满 `batch.size` 就收尾。不另造一条进度消息：这批题本来就会一条条
+// 投给网页，网页自己也能数。
+//
+// 【为什么一次只许一场】两场同时跑会在同一条投递通道上混账，谁也说不清哪条属于哪批。
+
+/** 等标签页 load 完的上限。CF 慢的时候 10 秒都正常，别卡太紧 */
+const SCRAPE_LOAD_TIMEOUT = 45000;
+/** 整趟的上限：load + 解析 + 逐题投递 */
+const SCRAPE_TOTAL_TIMEOUT = 120000;
+/** 最后一题投递完到关标签页之间的缓冲：SendTaskDone 还要送回那个标签页 */
+const SCRAPE_CLOSE_DELAY = 300;
+
+interface PendingScrape {
+  requestId: string;
+  tabId: number;
+  /** 这批一共几题（从第一条投递的 `batch.size` 学来）；0 = 还没学到 */
+  expected: number;
+  received: number;
+  timer?: ReturnType<typeof setTimeout>;
+}
+
+let activeScrape: PendingScrape | null = null;
+
+/** 结果广播给本站每一个标签页（同站多开时都该知道），哪个都没开着就悄悄结束 */
+async function broadcastToSite(action: string, payload: Record<string, unknown>): Promise<void> {
+  const tabs = await browser.tabs.query({ url: TARGET_SITE_PATTERNS }).catch((): Tabs.Tab[] => []);
+
+  await Promise.all(
+    tabs.map(tab =>
+      typeof tab.id === 'number'
+        ? browser.tabs.sendMessage(tab.id, { action, payload }).catch(noop)
+        : Promise.resolve(),
+    ),
+  );
+}
+
+function finishScrape(scrape: PendingScrape, result: { ok: boolean; count: number; reason?: string }): void {
+  if (scrape.timer !== undefined) {
+    clearTimeout(scrape.timer);
+  }
+
+  if (activeScrape === scrape) {
+    activeScrape = null;
+  }
+
+  browser.tabs.remove(scrape.tabId).catch(noop);
+  broadcastToSite('cp-scrape-contest-done', {
+    requestId: scrape.requestId,
+    ok: result.ok,
+    count: result.count,
+    reason: result.reason ?? '',
+  }).catch(noop);
+}
+
+/** 轮询标签页的 load 状态：不挂 onUpdated 是为了免去「监听器什么时候摘掉」这笔账 */
+async function waitForTabLoaded(tabId: number, timeout: number): Promise<boolean> {
+  const deadline = Date.now() + timeout;
+
+  while (Date.now() < deadline) {
+    try {
+      const tab = await browser.tabs.get(tabId);
+      if (tab.status === 'complete') {
+        return true;
+      }
+    } catch {
+      // 标签页被用户关了
+      return false;
+    }
+
+    await new Promise(resolve => setTimeout(resolve, 250));
+  }
+
+  return false;
+}
+
+/**
+ * 开一趟整场抓取。返回 `accepted` 只表示「已经开跑」，最终成败由
+ * `cp-scrape-contest-done` 广播回来 —— 网页拿到 accepted 就可以先挂上「抓取中」。
+ */
+async function scrapeContest(
+  requestId: unknown,
+  url: unknown,
+): Promise<{ accepted: boolean; reason?: string }> {
+  if (activeScrape !== null) {
+    return { accepted: false, reason: 'busy' };
+  }
+
+  if (typeof url !== 'string' || !/^https?:\/\/([^/]*\.)?codeforces\.(com|ml|net|es)\//i.test(url)) {
+    return { accepted: false, reason: 'bad-url' };
+  }
+
+  let tabId: number;
+  try {
+    const tab = await browser.tabs.create({ url, active: false });
+    if (typeof tab.id !== 'number') {
+      return { accepted: false, reason: 'tab-failed' };
+    }
+
+    tabId = tab.id;
+  } catch {
+    return { accepted: false, reason: 'tab-failed' };
+  }
+
+  const scrape: PendingScrape = {
+    requestId: typeof requestId === 'string' ? requestId : '',
+    tabId,
+    expected: 0,
+    received: 0,
+  };
+
+  activeScrape = scrape;
+  scrape.timer = setTimeout(
+    () => finishScrape(scrape, { ok: false, count: scrape.received, reason: 'timeout' }),
+    SCRAPE_TOTAL_TIMEOUT,
+  );
+
+  // 等页面、注入解析器、发 Parse。这一段不挡网页：它已经拿到 accepted 了
+  void (async () => {
+    if (!(await waitForTabLoaded(tabId, SCRAPE_LOAD_TIMEOUT))) {
+      finishScrape(scrape, { ok: false, count: 0, reason: 'load-failed' });
+      return;
+    }
+
+    // content.js 是一次性监听器（处理完一条消息就摘掉），每次解析前都要重新注入
+    try {
+      await browser.scripting.executeScript({ target: { tabId }, files: ['js/content.js'] });
+    } catch {
+      finishScrape(scrape, { ok: false, count: 0, reason: 'inject-failed' });
+      return;
+    }
+
+    try {
+      await browser.tabs.sendMessage(tabId, {
+        action: MessageAction.Parse,
+        payload: { parserName: 'CodeforcesContestParser' },
+      });
+    } catch {
+      finishScrape(scrape, { ok: false, count: 0, reason: 'parse-failed' });
+    }
+  })();
+
+  return { accepted: true };
+}
+
+/** 数一条投递：凑满 `batch.size` 就安排收尾 */
+function noteScrapeDelivery(raw: unknown): void {
+  const scrape = activeScrape;
+  if (scrape === null) {
+    return;
+  }
+
+  scrape.received += 1;
+
+  if (scrape.expected === 0 && typeof raw === 'string') {
+    try {
+      const size = JSON.parse(raw)?.batch?.size;
+      if (typeof size === 'number' && size > 0) {
+        scrape.expected = size;
+      }
+    } catch {
+      // 认不出 batch 就按「来一条算一条」，最后由总超时收尾
+    }
+  }
+
+  if (scrape.expected > 0 && scrape.received >= scrape.expected) {
+    // 缓冲一下再关：最后一题的 SendTaskDone 还要送回那个标签页
+    setTimeout(() => finishScrape(scrape, { ok: true, count: scrape.received }), SCRAPE_CLOSE_DELAY);
+  }
+}
+
 /** 允许网页修改的配置键白名单：只放投递目标开关，别的键一律不认 */
 const WRITABLE_CONFIG_KEYS = ['sendToWebPage', 'sendToLocalTools'] as const;
 type WritableConfigKey = (typeof WRITABLE_CONFIG_KEYS)[number];
@@ -204,11 +389,14 @@ interface ExtensionInfo {
    * `cf-check`：能回答「这个浏览器在 Codeforces 上登的是不是你填的那个 handle」
    *  （见下面 Codeforces 登录态那一段与 src/cfIdentity.ts）。站点拿不到这一条就不问，
    *  界面维持「失败后才知道」的现状。
+   * `fill-saved`：代填这一趟会**自己跑到保存落下去**，然后（1）关掉它自己开的那个
+   *  Codeforces 标签页、（2）回一条 `cp-fill-code-saved` 告诉网页「可以验证了」（2026-10-20 加，
+   *  见下面 finishCodeFill）。站点拿不到这一条就照旧让用户自己点验证，也就不会去等那条回报。
    */
   capabilities: string[];
 }
 
-const CAPABILITIES = ['fill-code', 'cf-check'];
+const CAPABILITIES = ['fill-code', 'cf-check', 'contest-batch', 'fill-saved'];
 
 /**
  * commands 在 Firefox for Android 上也整个不存在（MDN BCD: ff_android = false），
@@ -325,6 +513,19 @@ interface FillResult {
 }
 
 /**
+ * 一趟代填的结果 + 它用过的那个标签页。
+ *
+ * `tabId` / `created` 是 2026-10-20 为「填完就收工」加的：**只有扩展自己开的页才关**，
+ * 用户自己开在 Social 一页上的标签页不动 —— 他可能正拿那一页看别的东西，
+ * 替他关掉等于替他决定那个标签页没用了。
+ */
+interface FillOutcome {
+  result: FillResult;
+  tabId: number | null;
+  created: boolean;
+}
+
+/**
  * 轮询到标签页加载完成。被关掉 / 拿不到状态都算失败 —— 调用方把它折成「没能打开设置页」。
  */
 async function waitForTabComplete(tabId: number, timeout: number): Promise<boolean> {
@@ -388,16 +589,21 @@ async function askFillCode(tabId: number, handle: string, code: string): Promise
  * 并让它到前台 —— 这样用户能亲眼看到填了什么，没登录时也能就地在那一页登录后重试。
  * 刻意**不**把已有标签页导航走：用户可能正在那上面做别的事（比如正在交题）。
  *
+ * 【填完之后】2026-10-20 起这一趟不止「把字填进去」，还要跟到**保存真的落下去**为止，
+ * 好让网页立刻接着验证（见 finishCodeFill）。所以返回值多带了它用过的标签页 ——
+ * 收尾那一步要拿它去听跳转、并在成功之后关掉（仅限扩展自己开的页）。
+ *
  * 失败时一律**不关标签页**：无论是没登录还是页面认不出来，用户都需要那一页在手边。
  */
-async function fillCodeOnCodeforces(handle: unknown, code: unknown): Promise<FillResult> {
+async function fillCodeOnCodeforces(handle: unknown, code: unknown): Promise<FillOutcome> {
   if (typeof code !== 'string' || code.length === 0) {
-    return { ok: false, reason: 'page' };
+    return { result: { ok: false, reason: 'page' }, tabId: null, created: false };
   }
 
   const handleName = typeof handle === 'string' ? handle : '';
 
   let tabId: number | undefined;
+  let created = false;
 
   try {
     const existing = await browser.tabs.query({ url: [`${CF_SOCIAL_URL}*`] });
@@ -408,37 +614,127 @@ async function fillCodeOnCodeforces(handle: unknown, code: unknown): Promise<Fil
 
   if (tabId === undefined) {
     try {
-      const created = await browser.tabs.create({ url: CF_SOCIAL_URL });
-      tabId = typeof created.id === 'number' ? created.id : undefined;
+      const tab = await browser.tabs.create({ url: CF_SOCIAL_URL });
+      tabId = typeof tab.id === 'number' ? tab.id : undefined;
+      created = tabId !== undefined;
     } catch {
       tabId = undefined;
     }
   }
 
   if (tabId === undefined) {
-    return { ok: false, reason: 'no-tab' };
+    return { result: { ok: false, reason: 'no-tab' }, tabId: null, created: false };
   }
 
-  if (!(await waitForTabComplete(tabId, TAB_LOAD_TIMEOUT))) {
-    return { ok: false, reason: 'no-tab' };
+  const used = tabId;
+
+  if (!(await waitForTabComplete(used, TAB_LOAD_TIMEOUT))) {
+    return { result: { ok: false, reason: 'no-tab' }, tabId: used, created };
   }
 
   try {
-    const answer = await askFillCode(tabId, handleName, code);
+    const answer = await askFillCode(used, handleName, code);
 
     if (answer !== null) {
-      return answer;
+      return { result: answer, tabId: used, created };
     }
 
     // 没有应答：多半是这一页在扩展重载之前就开着，代填脚本不在。补注入一次再问
-    await browser.scripting.executeScript({ target: { tabId }, files: ['js/fillCode.js'] });
+    await browser.scripting.executeScript({ target: { tabId: used }, files: ['js/fillCode.js'] });
 
-    const retry = await askFillCode(tabId, handleName, code);
+    const retry = await askFillCode(used, handleName, code);
 
-    return retry ?? { ok: false, reason: 'page' };
+    return { result: retry ?? { ok: false, reason: 'page' }, tabId: used, created };
   } catch {
-    return { ok: false, reason: 'page' };
+    return { result: { ok: false, reason: 'page' }, tabId: used, created };
   }
+}
+
+/**
+ * 提交之后那次整页跳转最多等多久。
+ *
+ * CF 的 Social 表单是普通 POST，回来还是 `/settings/social` —— **URL 不会变**，所以
+ * 「保存成功了」只能从 status 的 `loading` → `complete` 这一趟看出来。平时一两百毫秒就完。
+ */
+const FILL_SAVE_TIMEOUT = 10000;
+
+/**
+ * 等这一次提交真的走完一趟跳转（loading → complete）。
+ *
+ * 必须在代填脚本回话**之后**才开始听，而它 sendResponse 之后还要等 50ms 才点提交
+ * （见 fillCode.ts 的 SUBMIT_DELAY），这段时间足够把监听挂上。也刻意不用轮询：
+ * 一次很快的 POST 可能整个落在两次轮询之间，那就白等了。
+ */
+function waitForTabReload(tabId: number, timeout: number): Promise<boolean> {
+  return new Promise<boolean>(resolve => {
+    let sawLoading = false;
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+
+    const finish = (saved: boolean): void => {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+      browser.tabs.onUpdated.removeListener(onUpdated);
+
+      if (timer !== undefined) {
+        clearTimeout(timer);
+      }
+
+      resolve(saved);
+    };
+
+    function onUpdated(id: number, changeInfo: Tabs.OnUpdatedChangeInfoType): void {
+      if (id !== tabId) {
+        return;
+      }
+
+      if (changeInfo.status === 'loading') {
+        sawLoading = true;
+
+        return;
+      }
+
+      if (changeInfo.status === 'complete' && sawLoading) {
+        finish(true);
+      }
+    }
+
+    browser.tabs.onUpdated.addListener(onUpdated);
+    timer = setTimeout(() => finish(false), timeout);
+  });
+}
+
+/**
+ * 代填的收尾：等保存落下去 → 关掉扩展自己开的那个标签页 → 告诉网页「可以验证了」。
+ *
+ * 【为什么由扩展回报，而不是网页自己等一个固定延时】网页看不到 Codeforces 那一侧什么时候
+ * 真的保存好：猜短了验证必被打回（服务端读到的还是旧 Last name），猜长了白转圈。
+ * 而这件事只有手里握着那个标签页的人知道。
+ *
+ * 【只关自己开的页】复用的那个标签页可能是用户自己开着的（他也许正在上面看资料），
+ * 替他关掉是越权。于是「关不关」看 `created`，而「能不能验证」看 `saved` —— 两者分开。
+ *
+ * 【没看到跳转就不关】保存没落下去时用户得能回到那一页看看究竟怎么了，这与
+ * 「失败时不关标签页」是同一条纪律。
+ */
+async function finishCodeFill(requestId: unknown, outcome: FillOutcome): Promise<void> {
+  if (outcome.tabId === null) {
+    return;
+  }
+
+  const saved = await waitForTabReload(outcome.tabId, FILL_SAVE_TIMEOUT);
+
+  if (saved && outcome.created) {
+    await browser.tabs.remove(outcome.tabId).catch(noop);
+  }
+
+  await broadcastToSite('cp-fill-code-saved', {
+    requestId: typeof requestId === 'string' ? requestId : '',
+    saved,
+  }).catch(noop);
 }
 
 // ------------------------------------------------- Codeforces 登录态（会话级缓存）
@@ -606,13 +902,18 @@ function handleMessage(
   }
 
   // 网页侧（云端同步的取码那一步）请扩展去 Codeforces 代填验证码。
-  // 与抓题不同，这一趟不需要网页在工作区里做什么，所以只把结果原样回给发起方
+  // 与抓题不同，这一趟不需要网页在工作区里做什么，所以只把结果原样回给发起方；
+  // 「填好了」之后还要跟到保存落下去，那一段的结果另走 cp-fill-code-saved 广播（见 finishCodeFill）
   if (message.action === 'cp-fill-code') {
     fillCodeOnCodeforces(message.handle, message.code)
-      .then(result => {
+      .then(outcome => {
         // 顺手把会话缓存对齐（不问成败都可能有收获）：失败时不算错，吞掉即可
-        syncCfIdentityFromFill(typeof message.handle === 'string' ? message.handle : '', result).catch(noop);
-        sendResponse(result);
+        syncCfIdentityFromFill(typeof message.handle === 'string' ? message.handle : '', outcome.result).catch(noop);
+        sendResponse(outcome.result);
+
+        if (outcome.result.ok) {
+          finishCodeFill(message.requestId, outcome).catch(noop);
+        }
       })
       .catch(() => sendResponse({ ok: false }));
 
@@ -630,9 +931,28 @@ function handleMessage(
     return true;
   }
 
+  // 网页请扩展整场抓样例：开静默标签页读一遍 `/contest/{id}/problems`，
+  // 解析结果照常逐题走 cp-task 投递。这里只回「开跑没有」，成败由
+  // cp-scrape-contest-done 广播回网页（见 scrapeContest）。
+  if (message.action === 'cp-scrape-contest') {
+    scrapeContest(message.requestId, message.url)
+      .then(result => sendResponse(result))
+      .catch(() => sendResponse({ accepted: false, reason: 'failed' }));
+
+    return true;
+  }
+
   if (sender.tab) {
     if (message.action === MessageAction.SendTask) {
+      // 这条投递是不是我们自己开的那场抓取发来的：先投递，再记账。
+      // 先投递是因为收尾会关掉那个标签页，得让最后一题的 SendTaskDone 有机会送回去
+      const fromScrape = activeScrape !== null && sender.tab.id === activeScrape.tabId;
+
       sendTask(sender.tab.id, message.payload.messageId, message.payload.message);
+
+      if (fromScrape) {
+        noteScrapeDelivery(message.payload.message);
+      }
     } else if (message.action === MessageAction.ReportCfIdentity) {
       // 只认正牌 Codeforces 标签页的回报：sender.tab.url 拿得到，说明扩展对那个域有 host 权限
       if (isCodeforcesTab(sender)) {

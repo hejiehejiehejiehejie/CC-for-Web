@@ -1,7 +1,7 @@
 {
   "name": "competitive-companion",
   "productName": "CC for Web",
-  "version": "2.66.4",
+  "version": "2.66.5",
   "description": "Parses competitive programming problems and sends them to your editor or online judge.",
   "repository": "https://github.com/jmerle/competitive-companion",
   "homepage": "https://www.998244353.best/",
