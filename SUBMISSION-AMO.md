@@ -21,7 +21,7 @@
 | 格    | 文件                                   | 说明                                                |
 | ---- | ------------------------------------ | ------------------------------------------------- |
 | 新版扩展 | `dist/cc_for_web-2.66.5-firefox.zip` | `pnpm package:firefox` 的产物（本机用 `tsx scripts/build/extension.ts firefox true false` + `web-ext build`，等价） |
-| 源代码  | `dist/cc_for_web-2.66.5-source.zip`  | **每次升版本都要重传一份**，AMO 不记忆上一次。本轮改动尚未提交，这一份是 `git stash create` 造临时提交后 `git archive` 出来的工作区快照；**提交之后请按 §2 第 3 步用 `HEAD` 重生成一次** |
+| 源代码  | `dist/cc_for_web-2.66.5-source.zip`  | **每次升版本都要重传一份**，AMO 不记忆上一次。本版改动已提交（`7300d62`），这一份就是 `git archive HEAD` 的产物，可以直接上传 |
 
 表单第一屏会问「是否使用代码生成或压缩工具」——本扩展用 esbuild 打包 + 压缩，必须答**是**，然后在这一屏上传源码包。
 
