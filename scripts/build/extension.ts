@@ -110,6 +110,25 @@ const sitePatterns = TARGET_SITE_PATTERNS.filter(pattern => !isProduction || !DE
  */
 const FILL_CODE_SITE_PATTERNS = ['https://codeforces.com/settings/social*'];
 
+/**
+ * 一键提交脚本（src/submitCode.ts）的注入范围，2026-10-23 新增。
+ *
+ * 两页都要：提交页（填表 + 点提交）与「我的提交」页（后台隔几秒问一次判定）。
+ * 用 `*.codeforces.com` 而不是裸域：匹配模式里 `*.example.com` 同时覆盖 apex 与子域，
+ * 万一用户被导到 `www.` 上也还认得。
+ *
+ * 【为什么也单独声明权限】这两类路径不在任何 parser 的题目路径里，不声明的话
+ * host_permissions 覆盖不到，后台的 tabs.query / executeScript 都会失败。
+ */
+const SUBMIT_SITE_PATTERNS = [
+  'https://*.codeforces.com/contest/*/submit*',
+  'https://*.codeforces.com/gym/*/submit*',
+  'https://*.codeforces.com/group/*/contest/*/submit*',
+  'https://*.codeforces.com/contest/*/my*',
+  'https://*.codeforces.com/gym/*/my*',
+  'https://*.codeforces.com/group/*/contest/*/my*',
+];
+
 // 题目**来源**站点：从 parser 注册表推导（见 src/hosts/sourceSitePatterns.ts），不再手写。
 // 这里顶层 import 注册表是安全的——构建脚本本来就会加载全部 parser（见 scripts/build/utils.ts），
 // 构建产物里不会因此多出任何东西。
@@ -118,7 +137,13 @@ const sourceSitePatterns = getSourceSitePatterns(parsers);
 // host_permissions 里三个来源可能重叠（比如自家站点、来源站点、localhost 工具），
 // 去重是为了让生成物可读、diff 可审；重复项本身不影响扩展行为。
 const hostPermissions = [
-  ...new Set([...sitePatterns, ...sourceSitePatterns, ...FILL_CODE_SITE_PATTERNS, ...LOCAL_TOOL_ORIGINS]),
+  ...new Set([
+    ...sitePatterns,
+    ...sourceSitePatterns,
+    ...FILL_CODE_SITE_PATTERNS,
+    ...SUBMIT_SITE_PATTERNS,
+    ...LOCAL_TOOL_ORIGINS,
+  ]),
 ];
 
 // 匹配模式写错不是「这一条失效」，而是整个扩展加载失败（带端口的写法在 Firefox 上就是如此，
@@ -190,6 +215,14 @@ await Promise.all(
             {
               matches: FILL_CODE_SITE_PATTERNS,
               js: ['js/fillCode.js'],
+              run_at: 'document_idle',
+            },
+            // 一键提交：提交页与「我的提交」页都要待命（见 SUBMIT_SITE_PATTERNS）。
+            // document_idle 同上 —— 表单与提交记录都是服务端渲染的，等 DOM 稳了再待命；
+            // 平时什么都不做，只在后台要求时填一次 / 读一次
+            {
+              matches: SUBMIT_SITE_PATTERNS,
+              js: ['js/submitCode.js'],
               run_at: 'document_idle',
             },
           ],
@@ -292,6 +325,7 @@ const options: esbuild.BuildOptions = {
     path.resolve(projectRoot, 'src/bridge.ts'),
     path.resolve(projectRoot, 'src/content.ts'),
     path.resolve(projectRoot, 'src/fillCode.ts'),
+    path.resolve(projectRoot, 'src/submitCode.ts'),
     path.resolve(projectRoot, 'src/options.ts'),
   ],
   outdir: path.resolve(buildDirectory, 'js'),

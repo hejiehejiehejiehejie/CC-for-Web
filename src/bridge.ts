@@ -10,7 +10,8 @@ import { browser } from './utils/browser';
  *   - 页面 -> 扩展：cp-ping（查扩展信息，回 cp-info）、cp-set-config（改投递开关）、
  *     cp-need-answer（回答上面那一问）、cp-fill-code（请扩展去 Codeforces 代填验证码，
  *     回 cp-fill-code-result）、cp-cf-check（问「这个浏览器在 Codeforces 上登的是不是你填的
- *     那个 handle」，回 cp-cf-check-result）
+ *     那个 handle」，回 cp-cf-check-result）、cp-submit（请扩展把当前文件提交到 Codeforces，
+ *     回 cp-submit-result）
  *
  * 信封格式（与网站侧 src/composables/useCompanionBridge.js 约定一致）：
  *   扩展 -> 页面 { source: 'competitive-companion', type, ... }
@@ -19,9 +20,15 @@ import { browser } from './utils/browser';
  * 【跨仓契约】下面这批消息名（cp-page / cp-task / cp-ping / cp-get-info / cp-info /
  * cp-set-config / cp-config / cp-query-need / cp-need-answer / cp-fill-code /
  * cp-fill-code-result / cp-fill-code-saved / cp-cf-check / cp-cf-check-result /
- * cp-scrape-contest / cp-scrape-contest-done）2026-10-01 与网站一起从 `cph-` 前缀
- * 改成 `cp-`。改任何一条都必须同步改网站侧 useCompanionBridge.js 并同时发新版，
- * 否则新旧两边互相认不出、抓题直接失联。
+ * cp-scrape-contest / cp-scrape-contest-done / cp-submit / cp-submit-result /
+ * cp-submit-status）2026-10-01 与网站一起从 `cph-` 前缀改成 `cp-`。改任何一条都必须同步改
+ * 网站侧 useCompanionBridge.js 并同时发新版，否则新旧两边互相认不出、抓题直接失联。
+ *
+ * 【cp-submit / cp-submit-result / cp-submit-status 是 2026-10-23 新加的】网页请扩展把当前
+ * 文件提交到 Codeforces（只在用户点那颗提交按钮 / 按快捷键时发生）。`cp-submit` 与
+ * `cp-submit-result` 是一问一答，只说「表单交出去了没有 + 提交号」；之后后台在那个后台
+ * 标签页里盯 `/my`，每变一次判定就广播一条 `cp-submit-status`（见 background.ts 的
+ * submitOnCodeforces 与 src/submitCode.ts）。受 `capabilities` 里的 `submit-code` 保护。
  *
  * 【cp-scrape-contest 这一对是 2026-10-19 新加的】网页请扩展**整场**抓样例：给它一个
  * `/contest/{id}/problems` 地址，扩展在后台开一个不激活的标签页读一遍，解析结果仍走
@@ -107,6 +114,9 @@ function onExtensionMessage(
   } else if (task?.action === 'cp-fill-code-saved') {
     // 代填收尾（保存落下去没有 + 那一页已经收掉）：同样原样转给网页，requestId 由它配对
     postToPage('cp-fill-code-saved', { ...(task.payload ?? {}) });
+  } else if (task?.action === 'cp-submit-status') {
+    // 一键提交之后的判定变化：原样转给网页，requestId 由它配对（见 submitCode.ts）
+    postToPage('cp-submit-status', { ...(task.payload ?? {}) });
   } else if (task?.action === 'cp-query-need') {
     // 答案在网页那边（工作区是它的数据），这里只负责把问题递过去、把答案递回来
     askPageNeed(String(task.payload?.url ?? ''))
@@ -138,6 +148,8 @@ window.addEventListener('message', (event: MessageEvent) => {
         handle?: string;
         code?: string;
         url?: string;
+        sourceCode?: string;
+        language?: string;
       }
     | undefined;
   if (data?.source !== PAGE_SOURCE) {
@@ -222,6 +234,23 @@ window.addEventListener('message', (event: MessageEvent) => {
       .sendMessage({ action: 'cp-cf-check', handle: data.handle })
       .then(result => postToPage('cp-cf-check-result', { requestId, ...(result as object) }))
       .catch(() => postToPage('cp-cf-check-result', { requestId, status: 'unknown' }));
+
+    return;
+  }
+
+  // 网页请扩展把当前文件提交到 Codeforces：整趟搬运都在后台与 submitCode 脚本里。
+  // 这里只递请求、递「提交成没成」；之后的判定变化由后台广播 cp-submit-status 回来
+  if (data.type === 'cp-submit') {
+    browser.runtime
+      .sendMessage({
+        action: 'cp-submit',
+        requestId,
+        url: data.url,
+        sourceCode: data.sourceCode,
+        language: data.language,
+      })
+      .then(result => postToPage('cp-submit-result', { requestId, ...(result as object) }))
+      .catch(() => postToPage('cp-submit-result', { requestId, ok: false, reason: 'no-tab' }));
   }
 });
 

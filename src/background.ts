@@ -392,11 +392,14 @@ interface ExtensionInfo {
    * `fill-saved`：代填这一趟会**自己跑到保存落下去**，然后（1）关掉它自己开的那个
    *  Codeforces 标签页、（2）回一条 `cp-fill-code-saved` 告诉网页「可以验证了」（2026-10-20 加，
    *  见下面 finishCodeFill）。站点拿不到这一条就照旧让用户自己点验证，也就不会去等那条回报。
+   * `submit-code`：能把网页递来的源码提交到 Codeforces，并轮询判定推回网页（2026-10-23 加，
+   *  见下面 submitOnCodeforces 与 src/submitCode.ts）。站点拿不到这一条就不显示提交按钮，
+   *  行为与老版本完全一致。
    */
   capabilities: string[];
 }
 
-const CAPABILITIES = ['fill-code', 'cf-check', 'contest-batch', 'fill-saved'];
+const CAPABILITIES = ['fill-code', 'cf-check', 'contest-batch', 'fill-saved', 'submit-code'];
 
 /**
  * commands 在 Firefox for Android 上也整个不存在（MDN BCD: ff_android = false），
@@ -737,6 +740,350 @@ async function finishCodeFill(requestId: unknown, outcome: FillOutcome): Promise
   }).catch(noop);
 }
 
+// ------------------------------------------------------ 一键提交（网页发起，2026-10-23）
+//
+// 【干什么】网页把「题目地址 + 当前编辑器正文 + 语言」递过来，这里开一个**后台标签页**把提交页
+// 打开、交给 src/submitCode.ts 填表并点提交，然后跟到 `/my` 页上把判定轮询出来，逐次广播给网页。
+//
+// 【为什么不后台 fetch】提交页要 CSRF token，表单必须从页面自己交出去；而且 Codeforces
+// 对 `chrome-extension://` 的 Origin 一向不客气。开一个真实标签页最稳。
+//
+// 【信任边界】地址不信任网页递来的那一份：parseSubmitTarget 只认四种 Codeforces 题目地址，
+// 自己算出提交页；源码原文写进提交框，与用户手工粘贴等价。不读 cookie、不回传页面内容。
+//
+// 【标签页策略】**总是新开一个后台页**（不复用已有标签页）：用户可能正开着提交页在写别的东西，
+// 替他把 textarea 覆盖掉是越权。没登录时把这一页亮出来让用户就地登录并保留；其余失败与成功
+// 收尾时都关掉它 —— 那几页都是扩展自己开的。
+
+/** 等提交脚本回话的上限。它只做几次 querySelector + 赋值，正常是毫秒级 */
+const SUBMIT_RESPONSE_TIMEOUT = 8000;
+/** 点提交之后等整页跳到 `/my` 的上限 */
+const SUBMIT_NAV_TIMEOUT = 20000;
+/** 判定轮询的总时长与间隔：CF 排队 + 评测通常几十秒，给两分钟足够 */
+const SUBMIT_VERDICT_TIMEOUT = 120000;
+const SUBMIT_POLL_INTERVAL = 2000;
+
+interface SubmitTarget {
+  submitUrl: string;
+  myUrl: string;
+  index: string;
+}
+
+interface SubmitResult {
+  ok: boolean;
+  reason?: string;
+  submissionId?: string;
+  verdict?: string;
+}
+
+interface SubmissionSnapshot {
+  found: boolean;
+  submissionId: string;
+  verdict: string;
+}
+
+/** `/contest/2276/problem/C`、`/gym/100001/problem/A`、`/group/123/contest/456/problem/B` */
+const CF_CONTEST_PROBLEM = /^\/(contest\/(\d+)|gym\/(\d+)|group\/(\d+)\/contest\/(\d+))\/problem\/([A-Z]\d{0,2})\/?$/i;
+/** `/problemset/problem/2276/C`：与上面是同一道题，提交页在 `/contest/{id}/submit` */
+const CF_PROBLEMSET_PROBLEM = /^\/problemset\/problem\/(\d+)\/([A-Z]\d{0,2})\/?$/i;
+
+/**
+ * 把网页递来的题目地址解析成提交页与「我的提交」页。只认正牌 codeforces.com ——
+ * 镜像站是另一套登录态，替它提交只会把源码交到错误的地方。
+ */
+function parseSubmitTarget(url: unknown): SubmitTarget | null {
+  if (typeof url !== 'string') {
+    return null;
+  }
+
+  let parsed: URL;
+
+  try {
+    parsed = new URL(url);
+  } catch {
+    return null;
+  }
+
+  if (parsed.protocol !== 'https:') {
+    return null;
+  }
+
+  if (parsed.hostname !== 'codeforces.com' && parsed.hostname !== 'www.codeforces.com') {
+    return null;
+  }
+
+  const contest = CF_CONTEST_PROBLEM.exec(parsed.pathname);
+  const problemset = CF_PROBLEMSET_PROBLEM.exec(parsed.pathname);
+
+  if (contest === null && problemset === null) {
+    return null;
+  }
+
+  const base = contest !== null ? contest[1] : `contest/${problemset![1]}`;
+  const index = (contest !== null ? contest[6] : problemset![2]).toUpperCase();
+
+  return {
+    submitUrl: `https://codeforces.com/${base}/submit`,
+    myUrl: `https://codeforces.com/${base}/my`,
+    index,
+  };
+}
+
+/** 把内容脚本的回应收成结果对象；形状不对就回 null，由调用方当「没答上来」处理 */
+function readSubmitResult(value: unknown): { ok: boolean; reason: string } | null {
+  if (typeof value !== 'object' || value === null) {
+    return null;
+  }
+
+  const record = value as { ok?: unknown; reason?: unknown };
+
+  if (typeof record.ok !== 'boolean') {
+    return null;
+  }
+
+  return { ok: record.ok, reason: typeof record.reason === 'string' ? record.reason : '' };
+}
+
+function readSubmissionSnapshot(value: unknown): SubmissionSnapshot | null {
+  if (typeof value !== 'object' || value === null) {
+    return null;
+  }
+
+  const record = value as { found?: unknown; submissionId?: unknown; verdict?: unknown };
+
+  if (record.found !== true) {
+    return null;
+  }
+
+  return {
+    found: true,
+    submissionId: typeof record.submissionId === 'string' ? record.submissionId : '',
+    verdict: typeof record.verdict === 'string' ? record.verdict : 'testing',
+  };
+}
+
+/** 问一次提交脚本；没应答（脚本不在这一页 / 扩展刚重载）回 null */
+async function askSubmitCode(
+  tabId: number,
+  payload: { source: string; language: string; index: string },
+): Promise<{ ok: boolean; reason: string } | null> {
+  try {
+    const response = (await Promise.race([
+      browser.tabs.sendMessage(tabId, { action: MessageAction.SubmitCode, payload }),
+      new Promise<undefined>(resolve => setTimeout(() => resolve(undefined), SUBMIT_RESPONSE_TIMEOUT)),
+    ])) as unknown;
+
+    return readSubmitResult(response);
+  } catch {
+    return null;
+  }
+}
+
+/** 问一次「这条提交现在什么状态」；失败回 null（下一轮再问） */
+async function askReadSubmission(tabId: number, submissionId: string): Promise<SubmissionSnapshot | null> {
+  try {
+    const response = (await Promise.race([
+      browser.tabs.sendMessage(tabId, {
+        action: MessageAction.ReadSubmission,
+        payload: { submissionId },
+      }),
+      new Promise<undefined>(resolve => setTimeout(() => resolve(undefined), SUBMIT_RESPONSE_TIMEOUT)),
+    ])) as unknown;
+
+    return readSubmissionSnapshot(response);
+  } catch {
+    return null;
+  }
+}
+
+/** 提交脚本在这一页上不在？补注入一次 —— 多半是这一页在扩展重载之前就开着 */
+async function injectSubmitScript(tabId: number, file: string = 'js/submitCode.js'): Promise<void> {
+  try {
+    await browser.scripting.executeScript({ target: { tabId }, files: [file] });
+  } catch {
+    // 注入不进去不是错误本身：调用方会再问一次，问不到就按失败收场
+  }
+}
+
+/** 当前标签页的地址；被关掉 / 读不到时回空串 */
+async function tabUrlOf(tabId: number): Promise<string> {
+  try {
+    return (await browser.tabs.get(tabId)).url ?? '';
+  } catch {
+    return '';
+  }
+}
+
+/** 等标签页跳到某个地址并加载完成 */
+async function waitForTabUrl(tabId: number, prefix: string, timeout: number): Promise<boolean> {
+  const deadline = Date.now() + timeout;
+
+  for (;;) {
+    try {
+      const tab = await browser.tabs.get(tabId);
+
+      if (tab.status === 'complete' && (tab.url ?? '').startsWith(prefix)) {
+        return true;
+      }
+    } catch {
+      return false;
+    }
+
+    if (Date.now() >= deadline) {
+      return false;
+    }
+
+    await new Promise(resolve => setTimeout(resolve, TAB_POLL_INTERVAL));
+  }
+}
+
+/**
+ * 盯一条提交的判定，变一次广播一次 `cp-submit-status`。
+ *
+ * 只在这里关标签页：判定到终态（或总超时）之前，那一页还得开着让脚本继续现拉 HTML。
+ * 只关自己开的页（本流程永远是新开的，所以 `created` 恒为真；端口开在这里是为了以后
+ * 若改成复用也能一眼看出该看哪个值）。
+ */
+async function watchSubmission(
+  requestId: string,
+  tabId: number,
+  submissionId: string,
+  created: boolean,
+): Promise<void> {
+  const deadline = Date.now() + SUBMIT_VERDICT_TIMEOUT;
+  let last = 'testing';
+  let injected = false;
+
+  while (Date.now() < deadline) {
+    await new Promise(resolve => setTimeout(resolve, SUBMIT_POLL_INTERVAL));
+
+    const snapshot = await askReadSubmission(tabId, submissionId);
+
+    if (snapshot === null) {
+      // 这一页的提交脚本不在（扩展重载过 / 页面还没就绪）：补注入一次再问，只补一次
+      if (!injected) {
+        injected = true;
+        await injectSubmitScript(tabId);
+      }
+
+      continue;
+    }
+
+    if (snapshot.verdict.length === 0 || snapshot.verdict === last) {
+      continue;
+    }
+
+    last = snapshot.verdict;
+
+    await broadcastToSite('cp-submit-status', { requestId, submissionId, verdict: last }).catch(noop);
+
+    if (last !== 'testing') {
+      break;
+    }
+  }
+
+  if (created) {
+    await browser.tabs.remove(tabId).catch(noop);
+  }
+}
+
+/**
+ * 把网页递来的源码提交到 Codeforces，并在成功之后挂着盯判定。
+ *
+ * 回给网页的 `cp-submit-result` 只说「表单交出去了没有 + 提交号」，判定走 `cp-submit-status`
+ * 这条独立的广播（见 watchSubmission）—— 网页把按钮转圈与结果通知分成两件事处理。
+ */
+async function submitOnCodeforces(
+  requestId: unknown,
+  url: unknown,
+  source: unknown,
+  language: unknown,
+): Promise<SubmitResult> {
+  const target = parseSubmitTarget(url);
+
+  if (target === null) {
+    return { ok: false, reason: 'unsupported-url' };
+  }
+
+  if (typeof source !== 'string' || source.trim().length === 0) {
+    return { ok: false, reason: 'empty' };
+  }
+
+  if (typeof language !== 'string' || language.length === 0) {
+    return { ok: false, reason: 'language-missing' };
+  }
+
+  let tabId: number;
+
+  try {
+    const tab = await browser.tabs.create({ url: target.submitUrl, active: false });
+
+    if (typeof tab.id !== 'number') {
+      return { ok: false, reason: 'no-tab' };
+    }
+
+    tabId = tab.id;
+  } catch {
+    return { ok: false, reason: 'no-tab' };
+  }
+
+  if (!(await waitForTabComplete(tabId, TAB_LOAD_TIMEOUT))) {
+    await browser.tabs.remove(tabId).catch(noop);
+    return { ok: false, reason: 'no-tab' };
+  }
+
+  // 没登录时 CF 会跳到 /enter：把这一页亮出来让用户就地登录，并**保留**它 ——
+  // 关掉等于把「去哪儿登录」这个唯一线索也收走了
+  if ((await tabUrlOf(tabId)).includes('/enter')) {
+    await browser.tabs.update(tabId, { active: true }).catch(noop);
+    return { ok: false, reason: 'not-logged-in' };
+  }
+
+  const payload = { source, language, index: target.index };
+
+  let answer = await askSubmitCode(tabId, payload);
+
+  if (answer === null) {
+    await injectSubmitScript(tabId);
+    answer = await askSubmitCode(tabId, payload);
+  }
+
+  const result = answer ?? { ok: false, reason: 'page' };
+
+  if (!result.ok) {
+    if (result.reason === 'not-logged-in') {
+      await browser.tabs.update(tabId, { active: true }).catch(noop);
+    } else {
+      await browser.tabs.remove(tabId).catch(noop);
+    }
+
+    return result;
+  }
+
+  // 表单已经交出去了：等页面跳到 /my。跳不过去多半是 CF 拒收（重复代码 / 比赛未开始等）
+  if (!(await waitForTabUrl(tabId, target.myUrl, SUBMIT_NAV_TIMEOUT))) {
+    await browser.tabs.remove(tabId).catch(noop);
+    return { ok: false, reason: 'rejected' };
+  }
+
+  let snapshot = await askReadSubmission(tabId, '');
+
+  if (snapshot === null) {
+    await injectSubmitScript(tabId);
+    snapshot = await askReadSubmission(tabId, '');
+  }
+
+  if (snapshot === null || snapshot.submissionId.length === 0) {
+    // 提交确实交出去了，只是读不到提交号：照实回 ok，判定就盯不成了
+    await browser.tabs.remove(tabId).catch(noop);
+    return { ok: true, submissionId: '', verdict: 'testing' };
+  }
+
+  void watchSubmission(typeof requestId === 'string' ? requestId : '', tabId, snapshot.submissionId, true);
+
+  return { ok: true, submissionId: snapshot.submissionId, verdict: 'testing' };
+}
+
 // ------------------------------------------------- Codeforces 登录态（会话级缓存）
 //
 // 【它解决什么】网站取码之后，代填那一步能不能成，取决于「这个浏览器里登的是不是这个 handle」。
@@ -938,6 +1285,16 @@ function handleMessage(
     scrapeContest(message.requestId, message.url)
       .then(result => sendResponse(result))
       .catch(() => sendResponse({ accepted: false, reason: 'failed' }));
+
+    return true;
+  }
+
+  // 网页请扩展一键提交：开后台页填表、点提交，再把判定轮询出来广播回去（见 submitOnCodeforces）。
+  // 这一条与上面几条一样**只在用户显式点按时发生**，不轮询、不后台自动跑
+  if (message.action === 'cp-submit') {
+    submitOnCodeforces(message.requestId, message.url, message.sourceCode, message.language)
+      .then(result => sendResponse(result))
+      .catch(() => sendResponse({ ok: false, reason: 'page' }));
 
     return true;
   }
