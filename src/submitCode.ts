@@ -215,6 +215,7 @@ function selectProblem(form: HTMLFormElement, index: string): boolean {
 
   if (exact !== undefined) {
     select.value = exact.value;
+    enableSubmit(select);
     return true;
   }
 
@@ -225,7 +226,20 @@ function selectProblem(form: HTMLFormElement, index: string): boolean {
   }
 
   select.value = byText.value;
+  enableSubmit(select);
   return true;
+}
+
+/**
+ * CF 的提交按钮是**服务端渲染成 disabled** 的，只有题目下拉框的 change 处理器
+ * （页面内联脚本里的 updateSubmitButtonState）会把它解禁。只改 `.value` 不派发事件，
+ * 按钮一直是灰的，`click()` 变成空操作 —— 用户看到的就是「代码填好了、却不提交」，
+ * 20 秒后报「Codeforces 拒绝了这次提交」（2026-10-23 实报）。
+ *
+ * 解禁是同步的（jQuery 的 change 处理器当场 removeAttr），所以派发完就能点。
+ */
+function enableSubmit(select: HTMLSelectElement): void {
+  select.dispatchEvent(new Event('change', { bubbles: true }));
 }
 
 /**
@@ -267,6 +281,7 @@ function selectLanguage(form: HTMLFormElement, language: string): boolean {
   }
 
   select.value = chosen.value;
+  select.dispatchEvent(new Event('change', { bubbles: true }));
   return true;
 }
 
