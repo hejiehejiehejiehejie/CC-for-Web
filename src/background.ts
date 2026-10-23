@@ -530,7 +530,16 @@ interface FillOutcome {
 
 /**
  * 轮询到标签页加载完成。被关掉 / 拿不到状态都算失败 —— 调用方把它折成「没能打开设置页」。
+ *
+ * ⚠️ 只认 `status === 'complete'` 不够：**新建的标签页在导航真正开始之前就可能报 complete**
+ * （那会儿地址还是 `about:blank`）。一键提交会因此在空白页上问内容脚本、当然没人应答，
+ * 最后报「提交页认不出来」并把标签页关掉（2026-10-23 实报）。所以还要确认它已经落在
+ * 真的文档上（http / https）。
  */
+function isRealDocument(url: string | undefined): boolean {
+  return typeof url === 'string' && (url.startsWith('http://') || url.startsWith('https://'));
+}
+
 async function waitForTabComplete(tabId: number, timeout: number): Promise<boolean> {
   const deadline = Date.now() + timeout;
 
@@ -538,7 +547,7 @@ async function waitForTabComplete(tabId: number, timeout: number): Promise<boole
     try {
       const tab = await browser.tabs.get(tabId);
 
-      if (tab.status === 'complete') {
+      if (tab.status === 'complete' && isRealDocument(tab.url)) {
         return true;
       }
     } catch {
@@ -1051,7 +1060,10 @@ async function submitOnCodeforces(
   const result = answer ?? { ok: false, reason: 'page' };
 
   if (!result.ok) {
-    if (result.reason === 'not-logged-in') {
+    // `not-logged-in` 要亮出来让用户就地登录；`challenge`（Cloudflare 人机验证）与
+    // `page`（找不到提交表单）同样留着 —— 那一页就是唯一的线索（验证 / 改版 / 被重定向），
+    // 关掉等于把现场一并收走。其余原因（题目没了 / 编译器没了）是确定结论，关掉别堆标签页。
+    if (result.reason === 'not-logged-in' || result.reason === 'challenge' || result.reason === 'page') {
       await browser.tabs.update(tabId, { active: true }).catch(noop);
     } else {
       await browser.tabs.remove(tabId).catch(noop);

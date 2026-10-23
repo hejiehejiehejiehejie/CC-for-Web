@@ -20,8 +20,13 @@
  *     自己不会刷新，而这份脚本跑在同源页面里，`fetch` 天然带着登录 cookie。
  *
  * 【只回原因枚举】reason 是**跨仓契约**（与网站侧 useCompanionBridge.js 的
- * `cp-submit-result` 一一对应）：`not-logged-in` / `problem-missing` / `language-missing` /
- * `page` / `empty`。其余原因（`no-tab`、`timeout`、`unsupported-url` 等）由后台与网站侧产生。
+ * `cp-submit-result` 一一对应）：`not-logged-in` / `challenge` / `problem-missing` /
+ * `language-missing` / `page` / `empty`。其余原因（`no-tab`、`timeout`、`unsupported-url` 等）
+ * 由后台与网站侧产生。
+ *
+ * `challenge` 是 2026-10-23 实机测试后补的：干净浏览器打开 CF 提交页时会先落到 Cloudflare 的
+ * 人机校验页（标题「请稍候…」）。它既不是登录页也没有提交表单，按 `page` 报会误导成「站点改版」，
+ * 用户看到保留下来的那一页才知道该去完成验证。
  */
 import { hasLoginForm } from './cfIdentity';
 import { MessageAction } from './models/messaging';
@@ -33,7 +38,7 @@ import { browser } from './utils/browser';
  */
 const SUBMIT_DELAY = 50;
 
-type SubmitReason = 'not-logged-in' | 'problem-missing' | 'language-missing' | 'page' | 'empty';
+type SubmitReason = 'not-logged-in' | 'challenge' | 'problem-missing' | 'language-missing' | 'page' | 'empty';
 
 interface SubmitResult {
   ok: boolean;
@@ -169,6 +174,31 @@ function findForm(): HTMLFormElement | null {
 }
 
 /**
+ * Cloudflare 的人机校验页。判据取自它自己的会话标记，不看泛泛的正文措辞 ——
+ * 「请稍候」这类字眼在正经页面上也可能出现，误判会让用户被指向一个不存在的验证。
+ *
+ * 2026-10-23 在真实 codeforces.com 上抓到的是 Cloudflare 托管验证页：没有 `#challenge-form`，
+ * 但有 `cf-chl-widget-*` 输入框、`window._cf_chl_opt` 与中文标题「请稍候…」。
+ * `challenge-platform` 的脚本**不能**单独当判据：普通 CF 页面也可能挂这条脚本做机器人检测。
+ * 而且这个函数只在「找不到提交表单」时才被调用（见 fill），有表单的页面一律按正常页处理。
+ */
+function isChallengePage(): boolean {
+  if (
+    document.querySelector(
+      '[id^="cf-chl-widget"], .cf-browser-verification, #challenge-form, #challenge-stage, #cf-please-wait',
+    ) !== null
+  ) {
+    return true;
+  }
+
+  if ('_cf_chl_opt' in window) {
+    return true;
+  }
+
+  return /just a moment|attention required|请稍候/i.test(document.title);
+}
+
+/**
  * 选中题目。CF 的题号下拉框 value 就是 `A` / `B1` 这种短串；个别页面会在文字前加题号，
  * 所以 value 对不上时再按文字前缀找一次。
  */
@@ -284,7 +314,7 @@ function fill(payload: { source?: unknown; language?: unknown; index?: unknown }
   const form = findForm();
 
   if (form === null) {
-    return { result: { ok: false, reason: 'page' }, form: null };
+    return { result: { ok: false, reason: isChallengePage() ? 'challenge' : 'page' }, form: null };
   }
 
   const language = typeof payload.language === 'string' ? payload.language : '';
