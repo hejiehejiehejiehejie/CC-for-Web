@@ -270,9 +270,14 @@ function selectLanguage(form: HTMLFormElement, language: string): boolean {
   return true;
 }
 
-/** 把源码写进提交框。表单是普通 POST，改 `.value` 就够；两个事件照发（同 fillCode.ts） */
+/**
+ * 把源码写进提交框。真页面（2026-10-23 登录态实测）的文本域叫 `textarea[name="source"]`
+ * （`#sourceCodeTextarea`，display:none）；`sourceFile` 是旁边那个**上传文件的 input**。
+ * 早先按 `textarea[name="sourceFile"]` 找，真页面上永远落空，用户看到的就是「提交页认不出来」。
+ * 可见的 Ace 编辑器与这个隐藏框双向绑定：写值再派发 input，Ace 里的内容会一起变（实测一致）。
+ */
 function fillSource(form: HTMLFormElement, source: string): boolean {
-  const textarea = form.querySelector<HTMLTextAreaElement>('textarea[name="sourceFile"], textarea#sourceFile');
+  const textarea = form.querySelector<HTMLTextAreaElement>('textarea[name="source"], textarea#sourceCodeTextarea');
 
   if (textarea === null) {
     return false;
