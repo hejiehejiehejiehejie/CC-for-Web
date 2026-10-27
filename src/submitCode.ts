@@ -28,7 +28,7 @@
  * 人机校验页（标题「请稍候…」）。它既不是登录页也没有提交表单，按 `page` 报会误导成「站点改版」，
  * 用户看到保留下来的那一页才知道该去完成验证。
  */
-import { hasLoginForm } from './cfIdentity';
+import { hasLoginForm, isChallengePage } from './cfIdentity';
 import { MessageAction } from './models/messaging';
 import { browser } from './utils/browser';
 
@@ -171,31 +171,6 @@ function findForm(): HTMLFormElement | null {
     document.querySelector<HTMLFormElement>('form.submit-form') ??
     document.querySelector<HTMLFormElement>('form[action*="/submit"]')
   );
-}
-
-/**
- * Cloudflare 的人机校验页。判据取自它自己的会话标记，不看泛泛的正文措辞 ——
- * 「请稍候」这类字眼在正经页面上也可能出现，误判会让用户被指向一个不存在的验证。
- *
- * 2026-10-23 在真实 codeforces.com 上抓到的是 Cloudflare 托管验证页：没有 `#challenge-form`，
- * 但有 `cf-chl-widget-*` 输入框、`window._cf_chl_opt` 与中文标题「请稍候…」。
- * `challenge-platform` 的脚本**不能**单独当判据：普通 CF 页面也可能挂这条脚本做机器人检测。
- * 而且这个函数只在「找不到提交表单」时才被调用（见 fill），有表单的页面一律按正常页处理。
- */
-function isChallengePage(): boolean {
-  if (
-    document.querySelector(
-      '[id^="cf-chl-widget"], .cf-browser-verification, #challenge-form, #challenge-stage, #cf-please-wait',
-    ) !== null
-  ) {
-    return true;
-  }
-
-  if ('_cf_chl_opt' in window) {
-    return true;
-  }
-
-  return /just a moment|attention required|请稍候/i.test(document.title);
 }
 
 /**

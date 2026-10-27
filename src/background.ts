@@ -280,10 +280,7 @@ async function waitForTabLoaded(tabId: number, timeout: number): Promise<boolean
  * 开一趟整场抓取。返回 `accepted` 只表示「已经开跑」，最终成败由
  * `cp-scrape-contest-done` 广播回来 —— 网页拿到 accepted 就可以先挂上「抓取中」。
  */
-async function scrapeContest(
-  requestId: unknown,
-  url: unknown,
-): Promise<{ accepted: boolean; reason?: string }> {
+async function scrapeContest(requestId: unknown, url: unknown): Promise<{ accepted: boolean; reason?: string }> {
   if (activeScrape !== null) {
     return { accepted: false, reason: 'busy' };
   }
@@ -399,7 +396,22 @@ interface ExtensionInfo {
   capabilities: string[];
 }
 
-const CAPABILITIES = ['fill-code', 'cf-check', 'contest-batch', 'fill-saved', 'submit-code'];
+const CAPABILITIES = [
+  'fill-code',
+  'cf-check',
+  'contest-batch',
+  'fill-saved',
+  'submit-code',
+  // 比赛动作（2026-10-26 加，见下面「比赛动作」那一段与 src/contestActions.ts）：
+  //   contest-schedule   —— 能读 /contests 列表上每一场的报名状态
+  //   contest-register   —— 能替用户在 CF 上提交报名表单（仅在用户显式点按确认后）
+  //   contest-virtual    —— 能替用户开一场 VP（同上）
+  //   contest-unofficial —— 能读某一场里指定 handle 的非正式名次
+  'contest-schedule',
+  'contest-register',
+  'contest-virtual',
+  'contest-unofficial',
+];
 
 /**
  * commands 在 Firefox for Android 上也整个不存在（MDN BCD: ff_android = false），
@@ -761,8 +773,10 @@ async function finishCodeFill(requestId: unknown, outcome: FillOutcome): Promise
 // 自己算出提交页；源码原文写进提交框，与用户手工粘贴等价。不读 cookie、不回传页面内容。
 //
 // 【标签页策略】**总是新开一个后台页**（不复用已有标签页）：用户可能正开着提交页在写别的东西，
-// 替他把 textarea 覆盖掉是越权。没登录时把这一页亮出来让用户就地登录并保留；其余失败与成功
-// 收尾时都关掉它 —— 那几页都是扩展自己开的。
+// 替他把 textarea 覆盖掉是越权。没登录时把这一页亮出来让用户就地登录并保留；其余失败
+// （题目没了 / 编译器没了 / 被拒收 / 读不到提交号）收尾时关掉它 —— 那几页都是扩展自己开的。
+// **判定为非 AC 不关**：那一页是用户看「具体怎么错的」的现场，收尾时导航到提交详情页并亮到前台
+// （见 watchSubmission）；只有 AC 才收掉。
 
 /** 等提交脚本回话的上限。它只做几次 querySelector + 赋值，正常是毫秒级 */
 const SUBMIT_RESPONSE_TIMEOUT = 8000;
@@ -775,6 +789,8 @@ const SUBMIT_POLL_INTERVAL = 2000;
 interface SubmitTarget {
   submitUrl: string;
   myUrl: string;
+  /** `contest/2276` / `gym/100001` / `group/123/contest/456`：拼提交详情页要用 */
+  base: string;
   index: string;
 }
 
@@ -834,6 +850,7 @@ function parseSubmitTarget(url: unknown): SubmitTarget | null {
   return {
     submitUrl: `https://codeforces.com/${base}/submit`,
     myUrl: `https://codeforces.com/${base}/my`,
+    base,
     index,
   };
 }
@@ -949,7 +966,12 @@ async function waitForTabUrl(tabId: number, prefix: string, timeout: number): Pr
 /**
  * 盯一条提交的判定，变一次广播一次 `cp-submit-status`。
  *
- * 只在这里关标签页：判定到终态（或总超时）之前，那一页还得开着让脚本继续现拉 HTML。
+ * 判定到终态（或总超时）之前，那一页得一直开着让脚本现拉 HTML。
+ *
+ * 【终态之后分两路】`ac` 收掉这一页；非 AC **留着**，并直接导航到这一条的详情页、亮到前台 ——
+ * 用户要看「具体怎么错的」（挂在第几个测试点、编译错误原文、RE 输出），只有 Codeforces 自己的
+ * 页面给得出，留在 `/my` 列表上还得再点一次才到得了现场。总超时（还停在 testing）也算非 AC：
+ * 同样留着并跳到详情页，让用户自己看那条提交卡在哪。
  * 只关自己开的页（本流程永远是新开的，所以 `created` 恒为真；端口开在这里是为了以后
  * 若改成复用也能一眼看出该看哪个值）。
  */
@@ -957,6 +979,7 @@ async function watchSubmission(
   requestId: string,
   tabId: number,
   submissionId: string,
+  submissionUrl: string,
   created: boolean,
 ): Promise<void> {
   const deadline = Date.now() + SUBMIT_VERDICT_TIMEOUT;
@@ -991,9 +1014,16 @@ async function watchSubmission(
     }
   }
 
-  if (created) {
-    await browser.tabs.remove(tabId).catch(noop);
+  if (!created) {
+    return;
   }
+
+  if (last === 'ac') {
+    await browser.tabs.remove(tabId).catch(noop);
+    return;
+  }
+
+  await browser.tabs.update(tabId, { url: submissionUrl, active: true }).catch(noop);
 }
 
 /**
@@ -1091,9 +1121,303 @@ async function submitOnCodeforces(
     return { ok: true, submissionId: '', verdict: 'testing' };
   }
 
-  void watchSubmission(typeof requestId === 'string' ? requestId : '', tabId, snapshot.submissionId, true);
+  void watchSubmission(
+    typeof requestId === 'string' ? requestId : '',
+    tabId,
+    snapshot.submissionId,
+    `https://codeforces.com/${target.base}/submission/${snapshot.submissionId}`,
+    true,
+  );
 
   return { ok: true, submissionId: snapshot.submissionId, verdict: 'testing' };
+}
+
+// ------------------------------------------------------- 比赛动作（2026-10-26 加）
+//
+// 【四条动作的共同形状】开一个后台标签页 → 等它加载 → 让 content script（src/contestActions.ts）
+// 在那一页上读一次 / 点一次 → 把结果折成枚举回给网页。网站自己做不到：跨源拿不到 CF 的会话，
+// 而报名与开 VP 都必须带着用户的登录态、对着 CF 自己的表单发 POST。
+//
+// 【与一键提交同一条信任边界】只回原因枚举、状态枚举与名次数字，**不回传页面内容**；
+// 报名与开 VP 只在用户显式点按之后发生一次，后台不做轮询、不自动报名。
+//
+// 【标签页策略】读类动作（报名状态 / 非正式名次）用完就关，不打扰用户；
+// 报名与开 VP 失败时**留着并亮出来** —— 那一页就是唯一线索（没登录 / 人机校验 / CF 说没资格），
+// 关掉等于把现场一并收走。成功则关掉：报名状态下一次刷新会重新读，不需要它留着。
+
+const CONTEST_ACTIONS_FILE = 'js/contestActions.js';
+const CF_CONTESTS_URL = 'https://codeforces.com/contests/page/1';
+
+interface ContestTarget {
+  registrationUrl: string;
+  virtualUrl: string;
+  /** 好友榜（含非正式选手）。登录后一页就能拿到本人与好友，且名次是总榜名次 */
+  standingsUrl: string;
+}
+
+/** 只认纯数字的比赛号：网页递来的东西一律当不可信输入，拼进 URL 之前先归一化 */
+function contestTargetOf(contestId: unknown): ContestTarget | null {
+  const id = typeof contestId === 'string' || typeof contestId === 'number' ? String(contestId).trim() : '';
+
+  if (!/^\d+$/.test(id)) {
+    return null;
+  }
+
+  return {
+    registrationUrl: `https://codeforces.com/contestRegistration/${id}`,
+    virtualUrl: `https://codeforces.com/contestRegistration/${id}/virtual/true`,
+    standingsUrl: `https://codeforces.com/contest/${id}/standings/friends/true?showUnofficial=true`,
+  };
+}
+
+/** 开一个不激活的标签页并等它加载完；失败（开不出来 / 超时）一律回 null 并收掉半成品 */
+async function openSilentCfTab(url: string): Promise<number | null> {
+  let tabId: number;
+
+  try {
+    const tab = await browser.tabs.create({ url, active: false });
+
+    if (typeof tab.id !== 'number') {
+      return null;
+    }
+
+    tabId = tab.id;
+  } catch {
+    return null;
+  }
+
+  if (!(await waitForTabComplete(tabId, TAB_LOAD_TIMEOUT))) {
+    await browser.tabs.remove(tabId).catch(noop);
+    return null;
+  }
+
+  return tabId;
+}
+
+/**
+ * 问一次比赛动作脚本。
+ *
+ * `inject` 只给**读类**动作用：这一页是刚开的，声明式注入本来就该在；补注入只是兜底
+ * （扩展在这页打开前刚被重载过）。报名 / 开 VP 坚决不补注入 —— 万一第一份脚本其实
+ * 只是慢了半拍，补注入会让同一个表单被交两次，那是不可逆的。
+ */
+async function askContestAction(
+  tabId: number,
+  action: MessageAction,
+  payload: Record<string, unknown> = {},
+  inject = false,
+): Promise<unknown> {
+  const ask = async (): Promise<unknown> => {
+    try {
+      return await Promise.race([
+        browser.tabs.sendMessage(tabId, { action, payload }),
+        new Promise<undefined>(resolve => setTimeout(() => resolve(undefined), SUBMIT_RESPONSE_TIMEOUT)),
+      ]);
+    } catch {
+      return undefined;
+    }
+  };
+
+  const answer = await ask();
+
+  if (answer !== undefined || !inject) {
+    return answer;
+  }
+
+  await injectSubmitScript(tabId, CONTEST_ACTIONS_FILE);
+
+  return ask();
+}
+
+const REGISTRATION_STATES = ['open', 'before', 'closed', 'registered', 'count', 'unknown'];
+
+/** 把内容脚本的报名状态回执收成白名单过的形状：认不出的值一律丢掉，网站按「—」显示 */
+function readStatesReply(value: unknown): { ok: boolean; reason: string; states: Record<string, string> } {
+  const record = value as { ok?: unknown; reason?: unknown; states?: unknown } | null | undefined;
+  const states: Record<string, string> = {};
+
+  if (typeof record?.states === 'object' && record.states !== null) {
+    for (const [id, state] of Object.entries(record.states as Record<string, unknown>)) {
+      if (/^\d+$/.test(id) && typeof state === 'string' && REGISTRATION_STATES.includes(state)) {
+        states[id] = state;
+      }
+    }
+  }
+
+  return {
+    ok: record?.ok === true,
+    reason: typeof record?.reason === 'string' ? record.reason : 'page',
+    states,
+  };
+}
+
+interface RankEntry {
+  handle: string;
+  rank: number;
+  unofficial: boolean;
+}
+
+function readRankReply(value: unknown): {
+  ok: boolean;
+  reason: string;
+  source: string;
+  ranks: RankEntry[];
+} {
+  const record = value as { ok?: unknown; reason?: unknown; source?: unknown; ranks?: unknown } | null | undefined;
+  const ranks: RankEntry[] = [];
+
+  if (Array.isArray(record?.ranks)) {
+    for (const item of record.ranks as unknown[]) {
+      const entry = item as { handle?: unknown; rank?: unknown; unofficial?: unknown };
+
+      // 只收「handle 是字符串 + 名次是有限数字」的条目：名次是要显示给用户的，宁可缺一条也不显示脏值
+      if (
+        typeof entry.handle === 'string' &&
+        typeof entry.rank === 'number' &&
+        Number.isFinite(entry.rank) &&
+        entry.rank > 0
+      ) {
+        ranks.push({ handle: entry.handle, rank: entry.rank, unofficial: entry.unofficial === true });
+      }
+    }
+  }
+
+  return {
+    ok: record?.ok === true,
+    reason: typeof record?.reason === 'string' ? record.reason : 'page',
+    source: record?.source === 'friends' || record?.source === 'page1' ? record.source : '',
+    ranks,
+  };
+}
+
+/** 等标签页离开某个地址前缀（表单交出去之后就是这一下跳转） */
+async function waitForTabLeave(tabId: number, prefix: string, timeout: number): Promise<boolean> {
+  const deadline = Date.now() + timeout;
+
+  for (;;) {
+    try {
+      const tab = await browser.tabs.get(tabId);
+
+      if (tab.status === 'complete' && !(tab.url ?? '').startsWith(prefix)) {
+        return true;
+      }
+    } catch {
+      return false;
+    }
+
+    if (Date.now() >= deadline) {
+      return false;
+    }
+
+    await new Promise(resolve => setTimeout(resolve, TAB_POLL_INTERVAL));
+  }
+}
+
+/** 读 /contests/page/1 上每一场的报名状态（赛程那一列）。读完就关页，不打扰用户 */
+async function readContestStatesOnCodeforces(): Promise<{
+  ok: boolean;
+  reason: string;
+  states: Record<string, string>;
+}> {
+  const tabId = await openSilentCfTab(CF_CONTESTS_URL);
+
+  if (tabId === null) {
+    return { ok: false, reason: 'no-tab', states: {} };
+  }
+
+  try {
+    // 没登录时 CF 也可能把这一页导到 /enter，那一页上没有比赛表格
+    if ((await tabUrlOf(tabId)).includes('/enter')) {
+      return { ok: false, reason: 'not-logged-in', states: {} };
+    }
+
+    const answer = await askContestAction(tabId, MessageAction.ReadContestStates, {}, true);
+
+    return answer === undefined ? { ok: false, reason: 'page', states: {} } : readStatesReply(answer);
+  } finally {
+    await browser.tabs.remove(tabId).catch(noop);
+  }
+}
+
+/**
+ * 替用户提交报名 / 开一场 VP。两种动作走同一个形状：打开那一页 → 点一次表单 → 等它跳走。
+ *
+ * 回给网页的只有枚举。**这个函数只在网页侧用户确认之后被调用一次**，它自己不做任何
+ * 自动重试或轮询 —— 报名是不可逆的，宁可让用户再点一次，也不要替他重放。
+ */
+async function submitContestEntry(
+  contestId: unknown,
+  kind: 'register' | 'virtual',
+): Promise<{ ok: boolean; reason: string }> {
+  const target = contestTargetOf(contestId);
+
+  if (target === null) {
+    return { ok: false, reason: 'bad-contest' };
+  }
+
+  const tabId = await openSilentCfTab(kind === 'virtual' ? target.virtualUrl : target.registrationUrl);
+
+  if (tabId === null) {
+    return { ok: false, reason: 'no-tab' };
+  }
+
+  const action = kind === 'virtual' ? MessageAction.StartVirtual : MessageAction.SubmitRegistration;
+  const result = readSubmitResult(await askContestAction(tabId, action)) ?? { ok: false, reason: 'page' };
+
+  if (!result.ok) {
+    // 这三种都指向「那一页上有用户要看 / 要做的事」：登录、过人机校验、看 CF 到底说了什么。
+    // 其余原因（没资格 / 已报过名）是确定结论，关掉别堆标签页
+    if (result.reason === 'not-logged-in' || result.reason === 'challenge' || result.reason === 'page') {
+      await browser.tabs.update(tabId, { active: true }).catch(noop);
+    } else {
+      await browser.tabs.remove(tabId).catch(noop);
+    }
+
+    return result;
+  }
+
+  // 表单交出去了：等它离开 /contestRegistration/。跳不过去多半是 CF 拒收（资格 / 资格赛时段 /
+  // 重复报名），现场留着让用户自己看那一页说了什么
+  if (!(await waitForTabLeave(tabId, 'https://codeforces.com/contestRegistration/', SUBMIT_NAV_TIMEOUT))) {
+    await browser.tabs.update(tabId, { active: true }).catch(noop);
+    return { ok: false, reason: 'rejected' };
+  }
+
+  await browser.tabs.remove(tabId).catch(noop);
+  return { ok: true, reason: '' };
+}
+
+/** 读某一场里这些 handle 的非正式名次。好友榜优先，第一页合并榜兜底（见 src/contestActions.ts） */
+async function readUnofficialRanks(
+  contestId: unknown,
+  handles: unknown,
+): Promise<{ ok: boolean; reason: string; source: string; ranks: RankEntry[] }> {
+  const target = contestTargetOf(contestId);
+  const wanted = Array.isArray(handles)
+    ? handles.filter((handle): handle is string => typeof handle === 'string' && handle.trim().length > 0)
+    : [];
+
+  if (target === null) {
+    return { ok: false, reason: 'bad-contest', source: '', ranks: [] };
+  }
+
+  if (wanted.length === 0) {
+    return { ok: false, reason: 'bad-handles', source: '', ranks: [] };
+  }
+
+  const tabId = await openSilentCfTab(target.standingsUrl);
+
+  if (tabId === null) {
+    return { ok: false, reason: 'no-tab', source: '', ranks: [] };
+  }
+
+  try {
+    const answer = await askContestAction(tabId, MessageAction.ReadUnofficialRank, { handles: wanted }, true);
+
+    return answer === undefined ? { ok: false, reason: 'page', source: '', ranks: [] } : readRankReply(answer);
+  } finally {
+    await browser.tabs.remove(tabId).catch(noop);
+  }
 }
 
 // ------------------------------------------------- Codeforces 登录态（会话级缓存）
@@ -1311,6 +1635,35 @@ function handleMessage(
     return true;
   }
 
+  // 网页读赛程上每一场的报名状态（2026-10-26 加）：开一页 /contests/page/1 读一次就关
+  if (message.action === 'cp-contest-states') {
+    readContestStatesOnCodeforces()
+      .then(result => sendResponse(result))
+      .catch(() => sendResponse({ ok: false, reason: 'page', states: {} }));
+
+    return true;
+  }
+
+  // 网页请扩展替用户报名 / 开一场 VP：只在用户显式点按确认之后发生一次（见 submitContestEntry）
+  if (message.action === 'cp-register' || message.action === 'cp-start-virtual') {
+    const kind = message.action === 'cp-start-virtual' ? 'virtual' : 'register';
+
+    submitContestEntry(message.contestId, kind)
+      .then(result => sendResponse(result))
+      .catch(() => sendResponse({ ok: false, reason: 'page' }));
+
+    return true;
+  }
+
+  // 网页问「我在这场里的非正式名次」：只回数字与是不是非正式，不回任何页面内容（见 readUnofficialRanks）
+  if (message.action === 'cp-unofficial-rank') {
+    readUnofficialRanks(message.contestId, message.handles)
+      .then(result => sendResponse(result))
+      .catch(() => sendResponse({ ok: false, reason: 'page', source: '', ranks: [] }));
+
+    return true;
+  }
+
   if (sender.tab) {
     if (message.action === MessageAction.SendTask) {
       // 这条投递是不是我们自己开的那场抓取发来的：先投递，再记账。
@@ -1374,3 +1727,49 @@ browser.runtime.onInstalled.addListener(createContextMenu);
 if (browser.contextMenus) {
   browser.contextMenus.onClicked.addListener(onContextMenu);
 }
+
+/**
+ * 给**已经打开**的目标网站标签页补注入桥接脚本（js/bridge.js）。
+ *
+ * 【为什么需要】内容脚本只在页面加载那一刻注入（manifest 的 document_start）。页面开在扩展
+ * 安装 / 更新 / 重载**之前**的那些标签页里没有桥，网站那边的探活（cp-ping → cp-info）永远
+ * 没人接，界面停在「未检测到」、只有用户自己刷新页面才能恢复（网站仓库 HANDOFF §13.7.1
+ * 第三种「装了也探不到」）。这里在扩展启动时主动补一份，把那一步去掉。
+ *
+ * 【为什么挂在启动处而不是 onInstalled】在扩展管理页点「重新加载」不一定触发 onInstalled，
+ * 但一定会重启后台；装上、更新完也同样会运行到这里。bridge.js 自带幂等标记（见
+ * src/bridge.ts 末尾），重复注入是空操作，所以每次启动无脑补一遍是安全的。
+ *
+ * 【注入范围】直接读 manifest 里 bridge 那一条的 matches：生产构建已经把 localhost 剔掉
+ * （scripts/build/extension.ts 的 DEV_ONLY_SITE_PATTERNS），运行时不再自己判一遍，免得
+ * 两份清单走偏。单页失败（已丢弃、正在导航、权限被收回）一律忽略 —— 这只是把「本来要刷新
+ * 页面」的那一步省掉，失败时行为与改动前相同。
+ */
+async function ensureBridges(): Promise<void> {
+  // Firefox for Android 上 scripting 命名空间存在的版本有限，缺了就当没有这条路（同 contextMenus）
+  if (!browser.scripting) {
+    return;
+  }
+
+  const entry = browser.runtime.getManifest().content_scripts?.find(script => script.js?.includes('js/bridge.js'));
+  const matches = entry?.matches ?? [];
+
+  if (matches.length === 0) {
+    return;
+  }
+
+  const tabs = await browser.tabs.query({ url: matches }).catch((): Tabs.Tab[] => []);
+
+  await Promise.all(
+    tabs.map(async tab => {
+      if (typeof tab.id !== 'number') {
+        return;
+      }
+
+      await browser.scripting.executeScript({ target: { tabId: tab.id }, files: ['js/bridge.js'] }).catch(noop);
+    }),
+  );
+}
+
+// 后台每次启动都补一遍：扩展装上 / 更新 / 重载之后，已经打开的网站页面不必刷新也能被探到
+void ensureBridges();

@@ -42,6 +42,59 @@ export function hasLoginForm(): boolean {
 }
 
 /**
+ * 这个标签页是不是「没登录」。
+ *
+ * 比 hasLoginForm 宽一档：有些页面（好友榜、提交页的 /my）没登录时不摆登录表单，只是把内容
+ * 换成一条提示，页头的登录入口则始终在。两处判据合起来才分得清「没登录」与「站点改版」——
+ * 只有 hasLoginForm 会把这些页面误报成 page。
+ */
+export function isLoggedOut(): boolean {
+  return hasLoginForm() || document.querySelector('.lang-chooser a[href^="/enter"]') !== null;
+}
+
+/**
+ * Cloudflare 的人机校验页。判据取自它自己的会话标记，不看泛泛的正文措辞 ——
+ * 「请稍候」这类字眼在正经页面上也可能出现，误判会让用户被指向一个不存在的验证。
+ *
+ * 2026-10-23 在真实 codeforces.com 上抓到的是 Cloudflare 托管验证页：没有 `#challenge-form`，
+ * 但有 `cf-chl-widget-*` 输入框、`window._cf_chl_opt` 与中文标题「请稍候…」。
+ * `challenge-platform` 的脚本**不能**单独当判据：普通 CF 页面也可能挂这条脚本做机器人检测。
+ * 调用方一律在「找不到预期表单」时才调它（见 submitCode.ts / contestActions.ts），
+ * 有表单的页面按正常页处理。
+ */
+export function isChallengePage(): boolean {
+  if (
+    document.querySelector(
+      '[id^="cf-chl-widget"], .cf-browser-verification, #challenge-form, #challenge-stage, #cf-please-wait',
+    ) !== null
+  ) {
+    return true;
+  }
+
+  if ('_cf_chl_opt' in window) {
+    return true;
+  }
+
+  return /just a moment|attention required|请稍候/i.test(document.title);
+}
+
+/**
+ * 一页 Codeforces 打不开的三种结局，按「用户该做什么」收敛成一个枚举。
+ * 正常页（返回空串）由调用方自己继续判。
+ */
+export function pageProblem(): 'not-logged-in' | 'challenge' | '' {
+  if (isChallengePage()) {
+    return 'challenge';
+  }
+
+  if (isLoggedOut()) {
+    return 'not-logged-in';
+  }
+
+  return '';
+}
+
+/**
  * 只有正牌 `codeforces.com` 才认。
  *
  * 镜像站（`codeforces.ml`、`codeforc.es` 等）是另一套会话，那边登着的未必就是本站绑定的那个

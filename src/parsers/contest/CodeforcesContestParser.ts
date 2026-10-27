@@ -100,9 +100,23 @@ export class CodeforcesContestParser extends SimpleContestParser {
 
     const category = elem.querySelector('.caption').textContent;
 
+    // 每道题要带上**它自己那一页**的地址：`base` 是去掉 `/problems` 之后的比赛地址
+    // （连同查询串一起去掉，`?locale=en` 不属于题目地址）
+    const base = url.split('?')[0].replace(/\/problems$/, '');
+
     const tasks: Task[] = [];
     for (const problemElem of [...elem.querySelectorAll('.problem-frames > div')]) {
-      const task = (await this.problemParser.parse(url, problemElem.innerHTML)) as Task;
+      // 整场页把七八道题塞进同一页，必须按题号把 url 指回各自那一页 —— Codeforces
+      // 在每一帧的 `.problemindexholder` 上标着题号（A / B / B1 …）。
+      // 【别照抄传进来的 url】那样每一道题都会带着「/contest/x/problems」这个地址出门，
+      // 而接收端一般按 url 认题：整场会被并成同一道题，后面的样例覆盖前面的，
+      // 真正该收样例的那几道题一个字节也拿不到（网页版 2026-10-26 实测如此）
+      const index = problemElem
+        .querySelector('.problemindexholder[problemindex]')
+        ?.getAttribute('problemindex');
+      const problemUrl = index ? `${base}/problem/${index}` : url;
+
+      const task = (await this.problemParser.parse(problemUrl, problemElem.innerHTML)) as Task;
       task.group = `${task.group} - ${category}`;
 
       tasks.push(task);

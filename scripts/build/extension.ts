@@ -129,6 +129,24 @@ const SUBMIT_SITE_PATTERNS = [
   'https://*.codeforces.com/group/*/contest/*/my*',
 ];
 
+/**
+ * 比赛动作脚本（src/contestActions.ts）的注入范围，2026-10-26 新增。
+ *
+ * 三处页面：比赛列表（读报名状态）、报名 / VP 页（提交表单）、榜单（读非正式名次）。
+ * 与一键提交同样单独声明 host 权限 —— 这几类路径不在任何 parser 的题目路径里，
+ * 不声明的话后台的 tabs.create 会被拦、executeScript 的兜底也注入不进去。
+ *
+ * `/contests/*` 只匹配 `/contests/page/1` 这类子路径（不带星号的裸 `/contests` 会被 CF
+ * 重定向到某场比赛页，本来也不读它）。
+ */
+const CONTEST_ACTIONS_SITE_PATTERNS = [
+  'https://*.codeforces.com/contests/*',
+  'https://*.codeforces.com/contestRegistration/*',
+  'https://*.codeforces.com/contest/*/standings*',
+  'https://*.codeforces.com/gym/*/standings*',
+  'https://*.codeforces.com/group/*/contest/*/standings*',
+];
+
 // 题目**来源**站点：从 parser 注册表推导（见 src/hosts/sourceSitePatterns.ts），不再手写。
 // 这里顶层 import 注册表是安全的——构建脚本本来就会加载全部 parser（见 scripts/build/utils.ts），
 // 构建产物里不会因此多出任何东西。
@@ -142,6 +160,7 @@ const hostPermissions = [
     ...sourceSitePatterns,
     ...FILL_CODE_SITE_PATTERNS,
     ...SUBMIT_SITE_PATTERNS,
+    ...CONTEST_ACTIONS_SITE_PATTERNS,
     ...LOCAL_TOOL_ORIGINS,
   ]),
 ];
@@ -223,6 +242,14 @@ await Promise.all(
             {
               matches: SUBMIT_SITE_PATTERNS,
               js: ['js/submitCode.js'],
+              run_at: 'document_idle',
+            },
+            // 比赛动作：比赛列表 / 报名页 / 榜单（见 CONTEST_ACTIONS_SITE_PATTERNS）。
+            // document_idle 同上 —— 表格、表单、榜单都是服务端渲染的；平时什么都不做，
+            // 只在后台要求时读一次 / 点一次
+            {
+              matches: CONTEST_ACTIONS_SITE_PATTERNS,
+              js: ['js/contestActions.js'],
               run_at: 'document_idle',
             },
           ],
@@ -326,6 +353,7 @@ const options: esbuild.BuildOptions = {
     path.resolve(projectRoot, 'src/content.ts'),
     path.resolve(projectRoot, 'src/fillCode.ts'),
     path.resolve(projectRoot, 'src/submitCode.ts'),
+    path.resolve(projectRoot, 'src/contestActions.ts'),
     path.resolve(projectRoot, 'src/options.ts'),
   ],
   outdir: path.resolve(buildDirectory, 'js'),

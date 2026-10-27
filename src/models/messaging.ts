@@ -28,4 +28,14 @@ export enum MessageAction {
   // 同样只能往后追加（见上面 CheckSampleNeeded 那条说明）。
   SubmitCode,
   ReadSubmission,
+  // 比赛相关的四个动作（src/contestActions.ts），方向都是后台 -> 内容脚本。
+  //   ReadContestStates    —— 读 /contests 列表每一场的报名状态（只回枚举，见 ContestRegistrationState）
+  //   SubmitRegistration   —— 提交「报名」表单（只在用户显式点按时用；后台不做任何自动报名）
+  //   StartVirtual         —— 提交「开一场 VP」表单（同上，仅用户点按）
+  //   ReadUnofficialRank   —— 读某一场的好友榜 / 合并榜，取指定 handle 的名次（只回数字）
+  // 同样只能往后追加（见上面 CheckSampleNeeded 那条说明）。
+  ReadContestStates,
+  SubmitRegistration,
+  StartVirtual,
+  ReadUnofficialRank,
 }

@@ -11,7 +11,8 @@ import { browser } from './utils/browser';
  *     cp-need-answer（回答上面那一问）、cp-fill-code（请扩展去 Codeforces 代填验证码，
  *     回 cp-fill-code-result）、cp-cf-check（问「这个浏览器在 Codeforces 上登的是不是你填的
  *     那个 handle」，回 cp-cf-check-result）、cp-submit（请扩展把当前文件提交到 Codeforces，
- *     回 cp-submit-result）
+ *     回 cp-submit-result）、cp-contest-states / cp-register / cp-start-virtual /
+ *     cp-unofficial-rank（比赛动作，回各自那条 *-result，2026-10-26 加）
  *
  * 信封格式（与网站侧 src/composables/useCompanionBridge.js 约定一致）：
  *   扩展 -> 页面 { source: 'competitive-companion', type, ... }
@@ -21,8 +22,16 @@ import { browser } from './utils/browser';
  * cp-set-config / cp-config / cp-query-need / cp-need-answer / cp-fill-code /
  * cp-fill-code-result / cp-fill-code-saved / cp-cf-check / cp-cf-check-result /
  * cp-scrape-contest / cp-scrape-contest-done / cp-submit / cp-submit-result /
- * cp-submit-status）2026-10-01 与网站一起从 `cph-` 前缀改成 `cp-`。改任何一条都必须同步改
- * 网站侧 useCompanionBridge.js 并同时发新版，否则新旧两边互相认不出、抓题直接失联。
+ * cp-submit-status / cp-contest-states / cp-contest-states-result / cp-register /
+ * cp-register-result / cp-start-virtual / cp-start-virtual-result / cp-unofficial-rank /
+ * cp-unofficial-rank-result）2026-10-01 与网站一起从 `cph-` 前缀改成 `cp-`。改任何一条都必须
+ * 同步改网站侧 useCompanionBridge.js 并同时发新版，否则新旧两边互相认不出、抓题直接失联。
+ *
+ * 【比赛动作这四对是 2026-10-26 新加的（扩展 2.68.0）】网页读赛程上每一场的报名状态、
+ * 请扩展替用户报名 / 开一场 VP、问一场里自己的非正式名次。全部**只在用户显式点按时**发生，
+ * 扩展侧只回枚举与数字（见 src/contestActions.ts 与 background.ts 的「比赛动作」那一段）。
+ * 受 `capabilities` 里的 contest-schedule / contest-register / contest-virtual /
+ * contest-unofficial 保护 —— 老扩展没有这几条，网站上的入口压根不出现。
  *
  * 【cp-submit / cp-submit-result / cp-submit-status 是 2026-10-23 新加的】网页请扩展把当前
  * 文件提交到 Codeforces（只在用户点那颗提交按钮 / 按快捷键时发生）。`cp-submit` 与
@@ -131,7 +140,7 @@ function onExtensionMessage(
 }
 
 // 页面 -> 扩展（握手：网页据此判断扩展是否已安装，并取版本号与快捷键）
-window.addEventListener('message', (event: MessageEvent) => {
+function handlePageMessage(event: MessageEvent): void {
   if (event.source !== window || event.origin !== window.location.origin) {
     return;
   }
@@ -150,6 +159,8 @@ window.addEventListener('message', (event: MessageEvent) => {
         url?: string;
         sourceCode?: string;
         language?: string;
+        contestId?: string;
+        handles?: string[];
       }
     | undefined;
   if (data?.source !== PAGE_SOURCE) {
@@ -219,9 +230,7 @@ window.addEventListener('message', (event: MessageEvent) => {
           });
         }
       })
-      .catch(() =>
-        postToPage('cp-scrape-contest-done', { requestId, ok: false, count: 0, reason: 'failed' }),
-      );
+      .catch(() => postToPage('cp-scrape-contest-done', { requestId, ok: false, count: 0, reason: 'failed' }));
 
     return;
   }
@@ -252,6 +261,61 @@ window.addEventListener('message', (event: MessageEvent) => {
       .then(result => postToPage('cp-submit-result', { requestId, ...(result as object) }))
       .catch(() => postToPage('cp-submit-result', { requestId, ok: false, reason: 'no-tab' }));
   }
-});
 
-browser.runtime.onMessage.addListener(onExtensionMessage);
+  // 网页读 /contests 列表上每一场的报名状态。后台开一页读一次就关，回的是状态枚举表
+  if (data.type === 'cp-contest-states') {
+    browser.runtime
+      .sendMessage({ action: 'cp-contest-states', requestId })
+      .then(result => postToPage('cp-contest-states-result', { requestId, ...(result as object) }))
+      .catch(() => postToPage('cp-contest-states-result', { requestId, ok: false, reason: 'no-tab', states: {} }));
+
+    return;
+  }
+
+  // 网页请扩展替用户报名 / 开一场 VP。**只在用户显式确认后**由网页发起，桥只负责递请求与答案；
+  // 后台不当场重试，也不做任何自动报名
+  if (data.type === 'cp-register' || data.type === 'cp-start-virtual') {
+    browser.runtime
+      .sendMessage({ action: data.type, requestId, contestId: data.contestId })
+      .then(result => postToPage(`${data.type}-result`, { requestId, ...(result as object) }))
+      .catch(() => postToPage(`${data.type}-result`, { requestId, ok: false, reason: 'no-tab' }));
+
+    return;
+  }
+
+  // 网页问「这些 handle 在这场里的非正式名次是多少」：回名次数字 + 是不是非正式，不回页面内容。
+  // ⚠️ 回包里的那一页叫 `rankSource`，不叫 `source` —— 信封自己的 `source` 是
+  // 'competitive-companion' 这个标记，同名字段会在展开时把它盖掉，网页整条消息直接丢掉
+  // （2026-10-27 实测：名次永远停在「查询中…」，直到 40 秒超时）。
+  if (data.type === 'cp-unofficial-rank') {
+    browser.runtime
+      .sendMessage({ action: 'cp-unofficial-rank', requestId, contestId: data.contestId, handles: data.handles })
+      .then(result => {
+        const { source, ...rest } = result as { source?: unknown } & Record<string, unknown>;
+        postToPage('cp-unofficial-rank-result', { requestId, ...rest, rankSource: source });
+      })
+      .catch(() =>
+        postToPage('cp-unofficial-rank-result', { requestId, ok: false, reason: 'no-tab', rankSource: '', ranks: [] }),
+      );
+  }
+}
+
+/**
+ * 两份监听器只注册一次。
+ *
+ * 这个脚本有**两条**注入路径：manifest 的 content_scripts（页面加载那一刻）与后台在扩展
+ * 启动时给**已经打开**的标签页补注入（background.ts 的 ensureBridges —— 页面开在扩展安装 /
+ * 更新 / 重载之前的那些标签页里没有桥，网站探活会一直超时，见网站仓库 HANDOFF §13.7.1）。
+ * 两条路径可能落在同一个页面上：重复注册会让同一条 cp-task 转两次、一次 cp-ping 回两条。
+ *
+ * 标记写在 window 上、写在注册之前：两次注入都落在扩展的**同一个隔离世界**里，
+ * 后一份看得见前一份留下的标记。
+ */
+const bridgeWindow = window as typeof window & { __cpBridgeInstalled?: boolean };
+
+if (bridgeWindow.__cpBridgeInstalled !== true) {
+  bridgeWindow.__cpBridgeInstalled = true;
+
+  window.addEventListener('message', handlePageMessage);
+  browser.runtime.onMessage.addListener(onExtensionMessage);
+}
