@@ -385,35 +385,51 @@ async function readRanks(handles: string[]): Promise<RankReply> {
 
 // ------------------------------------------------------------ 消息入口
 
-browser.runtime.onMessage.addListener((message: any, _sender, sendResponse) => {
-  if (message?.action === MessageAction.ReadContestStates) {
-    sendResponse(readStates());
-    return undefined;
-  }
+/**
+ * 监听器只注册一次。
+ *
+ * 这个脚本有两条注入路径：manifest 的 content_scripts（document_idle）与后台在读之前发现
+ * 没人应答时补注入的那一份（background.ts 的 askContestAction）。读类动作现在等到 DOM 可读
+ * 就问，可能比 document_idle 早一步 —— 那时补注入的那份会先注册，紧随其后的声明式注入
+ * 再注册一次，同一条消息就会回两遍。
+ *
+ * 标记写在 window 上、写在注册之前：两次注入落在扩展的同一个隔离世界里，后一份看得见前一份。
+ */
+const contestActionsWindow = window as typeof window & { __cpContestActionsInstalled?: boolean };
 
-  if (message?.action === MessageAction.SubmitRegistration || message?.action === MessageAction.StartVirtual) {
-    const kind = message.action === MessageAction.StartVirtual ? 'virtual' : 'register';
-    const { result, form } = prepareEntry(kind);
+if (contestActionsWindow.__cpContestActionsInstalled !== true) {
+  contestActionsWindow.__cpContestActionsInstalled = true;
 
-    sendResponse(result);
+  browser.runtime.onMessage.addListener((message: any, _sender, sendResponse) => {
+    if (message?.action === MessageAction.ReadContestStates) {
+      sendResponse(readStates());
+      return undefined;
+    }
 
-    // 回话先走、提交后走：页面一跳转，消息通道就没了（与 submitCode.ts 的 SUBMIT_DELAY 同一个理由）
-    if (result.ok && form !== null) {
-      window.setTimeout(() => submitForm(form), SUBMIT_DELAY);
+    if (message?.action === MessageAction.SubmitRegistration || message?.action === MessageAction.StartVirtual) {
+      const kind = message.action === MessageAction.StartVirtual ? 'virtual' : 'register';
+      const { result, form } = prepareEntry(kind);
+
+      sendResponse(result);
+
+      // 回话先走、提交后走：页面一跳转，消息通道就没了（与 submitCode.ts 的 SUBMIT_DELAY 同一个理由）
+      if (result.ok && form !== null) {
+        window.setTimeout(() => submitForm(form), SUBMIT_DELAY);
+      }
+
+      return undefined;
+    }
+
+    if (message?.action === MessageAction.ReadUnofficialRank) {
+      const handles = Array.isArray(message.payload?.handles) ? message.payload.handles : [];
+
+      readRanks(handles.filter((handle: unknown): handle is string => typeof handle === 'string'))
+        .then(reply => sendResponse(reply))
+        .catch(() => sendResponse({ ok: false, reason: 'page', source: '', ranks: [] }));
+
+      return true;
     }
 
     return undefined;
-  }
-
-  if (message?.action === MessageAction.ReadUnofficialRank) {
-    const handles = Array.isArray(message.payload?.handles) ? message.payload.handles : [];
-
-    readRanks(handles.filter((handle: unknown): handle is string => typeof handle === 'string'))
-      .then(reply => sendResponse(reply))
-      .catch(() => sendResponse({ ok: false, reason: 'page', source: '', ranks: [] }));
-
-    return true;
-  }
-
-  return undefined;
-});
+  });
+}

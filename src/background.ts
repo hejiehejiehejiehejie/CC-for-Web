@@ -12,12 +12,38 @@ declare global {
   const PARSER_NAMES: string[];
 }
 
-function createContextMenu(): void {
+/**
+ * 清掉上一次运行留下的一整套菜单。
+ *
+ * `contextMenus.removeAll` 在 Firefox（webextension-polyfill）上是 Promise、在老一点的
+ * Chrome 上只认回调；两种都接上，别让「清完了没」这件事靠猜 —— 没清干净的话下面每一次
+ * create 都会撞「Cannot create item with duplicate id」。
+ */
+function clearContextMenus(): Promise<void> {
+  return new Promise(resolve => {
+    try {
+      const returned = (browser.contextMenus.removeAll as (cb?: () => void) => unknown)(resolve);
+
+      if (returned !== null && typeof returned === 'object' && 'then' in (returned as object)) {
+        (returned as Promise<void>).then(resolve, resolve);
+      }
+    } catch {
+      resolve();
+    }
+  });
+}
+
+async function createContextMenu(): Promise<void> {
   // Firefox for Android 上 contextMenus 整个命名空间不存在（MDN BCD: menus = ff_android false），
   // 这里也会抛 TypeError，所以先挡一下。桌面端行为不变。
   if (!browser.contextMenus) {
     return;
   }
+
+  // 【必须幂等】菜单跟着 profile 持久化，而 onInstalled 在扩展更新、Chrome 自身升级时都会再触发
+  // 一次。不先清空的话，上一次建的 163 个 id 还在，再 create 就是 163 条
+  // 「Cannot create item with duplicate id parse-with-<Parser>」（2.68.1 更新后实测满屏都是）。
+  await clearContextMenus();
 
   browser.contextMenus.create({
     id: 'parse-with',
@@ -564,6 +590,43 @@ async function waitForTabComplete(tabId: number, timeout: number): Promise<boole
       }
     } catch {
       return false;
+    }
+
+    if (Date.now() >= deadline) {
+      return false;
+    }
+
+    await new Promise(resolve => setTimeout(resolve, TAB_POLL_INTERVAL));
+  }
+}
+
+/**
+ * 等到这一页的 DOM 可以读（DOMContentLoaded）就返回，不等 `load`。
+ *
+ * 【为什么读类动作用它】CF 的比赛表格是服务端渲染的，DOM 一解析完就在文档里；
+ * 而 `load` 还要等广告、统计脚本这些与内容无关的资源（2026-10-29 实测 /contests/page/1：
+ * 表格 3.0 s 可读，`load` 5.3–5.9 s）。等 `load` 每次白等两三秒，CF 再慢一点就顶到
+ * TAB_LOAD_TIMEOUT，整条读失败 —— 报名状态那一列直接显示成「—」。
+ *
+ * 【判据为什么是 readyState 而不是找表格】认页面的活只能有一个出处：脚本在不在、这是挑战页
+ * 还是登录页，全交给 contestActions.js 里的 pageProblem（见 src/cfIdentity.ts）。这里只负责
+ * 「文档能不能读」，读到之后由内容脚本自己回答。
+ */
+async function waitForTabDom(tabId: number, timeout: number): Promise<boolean> {
+  const deadline = Date.now() + timeout;
+
+  for (;;) {
+    try {
+      const [frame] = await browser.scripting.executeScript({
+        target: { tabId },
+        func: () => document.readyState !== 'loading',
+      });
+
+      if (frame?.result === true) {
+        return true;
+      }
+    } catch {
+      // 正在导航 / 文档还没建出来：下一轮再问
     }
 
     if (Date.now() >= deadline) {
@@ -1170,8 +1233,11 @@ function contestTargetOf(contestId: unknown): ContestTarget | null {
   };
 }
 
-/** 开一个不激活的标签页并等它加载完；失败（开不出来 / 超时）一律回 null 并收掉半成品 */
-async function openSilentCfTab(url: string): Promise<number | null> {
+/** 等这一页可以动到某个程度：`waitForTabComplete`（整页 load 完）或 `waitForTabDom`（DOM 可读） */
+type TabReady = (tabId: number, timeout: number) => Promise<boolean>;
+
+/** 开一个不激活的标签页并等它到位；失败（开不出来 / 超时）一律回 null 并收掉半成品 */
+async function openSilentCfTab(url: string, ready: TabReady = waitForTabComplete): Promise<number | null> {
   let tabId: number;
 
   try {
@@ -1186,7 +1252,7 @@ async function openSilentCfTab(url: string): Promise<number | null> {
     return null;
   }
 
-  if (!(await waitForTabComplete(tabId, TAB_LOAD_TIMEOUT))) {
+  if (!(await ready(tabId, TAB_LOAD_TIMEOUT))) {
     await browser.tabs.remove(tabId).catch(noop);
     return null;
   }
@@ -1319,14 +1385,15 @@ async function readContestStatesOnCodeforces(): Promise<{
   reason: string;
   states: Record<string, string>;
 }> {
-  const tabId = await openSilentCfTab(CF_CONTESTS_URL);
+  // 只等到 DOM 可读：表格是服务端渲染的，等 load 白等两三秒（见 waitForTabDom）
+  const tabId = await openSilentCfTab(CF_CONTESTS_URL, waitForTabDom);
 
   if (tabId === null) {
     return { ok: false, reason: 'no-tab', states: {} };
   }
 
   try {
-    // 没登录时 CF 也可能把这一页导到 /enter，那一页上没有比赛表格
+    // 没登录时 CF 会把它导到 /enter，那一页上没有比赛表格
     if ((await tabUrlOf(tabId)).includes('/enter')) {
       return { ok: false, reason: 'not-logged-in', states: {} };
     }
