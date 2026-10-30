@@ -17,7 +17,8 @@
  *   - 回给后台的只有原因枚举、状态枚举与名次数字，**不回传页面内容**。
  *
  * 【reason 是跨仓契约】与网站侧 useCompanionBridge.js 的 `cp-register-result` 等一一对应：
- *   `not-logged-in` / `challenge` / `page` / `not-eligible` / `already-registered`。
+ *   `not-logged-in` / `challenge` / `page` / `not-eligible` / `already-registered` /
+ *   `unrated-unavailable`（2026-10-30 加：要的是不计分，可这一页没有那个控件）。
  * 其余原因（`rejected`、`timeout`、`no-tab`、`bad-contest`）由后台与网站侧产生。
  *
  * 【报名状态也是契约】`open` / `before` / `closed` / `registered` / `count` / `unknown`，
@@ -33,7 +34,18 @@ const SUBMIT_DELAY = 50;
 
 type RegistrationState = 'open' | 'before' | 'closed' | 'registered' | 'count' | 'unknown';
 
-type PageReason = '' | 'not-logged-in' | 'challenge' | 'page' | 'not-eligible' | 'already-registered';
+/** 报名方式：计分 / 不计分。CF 只对允许 unrated 的轮次给出这个控件（2026-10-30 加） */
+type RatingChoice = 'rated' | 'unrated';
+
+type PageReason =
+  | ''
+  | 'not-logged-in'
+  | 'challenge'
+  | 'page'
+  | 'not-eligible'
+  | 'already-registered'
+  /** 用户要的是不计分，但这场报名的表单里根本没有那个控件 —— 不提交，让他自己去 CF 看 */
+  | 'unrated-unavailable';
 
 interface ActionReply {
   ok: boolean;
@@ -68,7 +80,13 @@ interface RankReply {
  * 一行比赛末尾那个单元格说的是什么。
  *
  * 认字不认结构：CF 这一列由服务端直接渲染成文字 / 链接，没有稳定的 class 可用，
- * 唯一可靠的信息就是那几句话（2026-10-26 实测页面）。
+ * 唯一可靠的信息就是那几句话（2026-10-26 实测页面；2026-10-30 补全语料）：
+ *
+ *   `Registration completed x17284`  已报名
+ *   `Register » x1521 Until closing 4 days`  报名开放、尚未报名
+ *   `Before registration 3 days`  报名还没开放
+ *   `Registration closed`  报名已关
+ *   `x17284`  进行中 / 已结束（只剩人数，分不出报名与否）
  */
 function registrationStateOf(row: Element): RegistrationState {
   const cell = row.lastElementChild;
@@ -79,8 +97,11 @@ function registrationStateOf(row: Element): RegistrationState {
 
   const text = (cell.textContent ?? '').replace(/\s+/g, ' ').trim();
 
-  // 「Registered」必须排在「Registration closed」前面判：两句里都有 registration
-  if (/registered/i.test(text)) {
+  // 「已报名」CF 写的是 **Registration completed**（原文：`Registration completed x17284`），
+  // 里面**没有 registered 这个词** —— 2026-10-30 前这里只认 /registered/i，已报名的行一路落到
+  // 后面的分支，最后返回 unknown，站点的赛程就把它显示成「—」。
+  // 顺序仍然要在「Registration closed」前面判：两句都以 Registration 开头。
+  if (/registration (is )?completed|registered/i.test(text)) {
     return 'registered';
   }
 
@@ -173,6 +194,112 @@ function applyField(form: HTMLFormElement, name: string, value: string): void {
   }
 }
 
+/**
+ * 一个控件自己那段文字：name / value / aria-label / 包着它的 label / `label[for]` /
+ * 紧跟在它后面的那段纯文字，全部拼起来认。
+ *
+ * CF 把说明写在哪一处不固定 —— 有时是 `<label><input …> participate as rated</label>`，
+ * 有时是 `<input …> participate as rated` 这种裸文本兄弟节点。所以不认结构，认词。
+ */
+function controlLabel(field: HTMLInputElement | HTMLSelectElement, form: HTMLFormElement): string {
+  const parts: string[] = [field.getAttribute('name') ?? '', field.value ?? '', field.getAttribute('aria-label') ?? ''];
+
+  const wrapper = field.closest('label');
+
+  if (wrapper !== null) {
+    parts.push(wrapper.textContent ?? '');
+  }
+
+  const id = field.getAttribute('id');
+
+  if (id !== null && id !== '') {
+    const explicit = form.querySelector(`label[for="${CSS.escape(id)}"]`);
+
+    if (explicit !== null) {
+      parts.push(explicit.textContent ?? '');
+    }
+  }
+
+  const next = field.nextSibling;
+
+  if (next !== null && next.nodeType === Node.TEXT_NODE) {
+    parts.push(next.textContent ?? '');
+  }
+
+  return parts.join(' ').replace(/\s+/g, ' ').trim();
+}
+
+/** 这段文字说的是哪一边；两个词都没有 = 与计分无关的控件（比如「个人 / 队伍」那一组） */
+function ratingSide(text: string): RatingChoice | '' {
+  // unrated 里也含 rated，先认它
+  if (/unrated/i.test(text)) {
+    return 'unrated';
+  }
+
+  if (/rated/i.test(text)) {
+    return 'rated';
+  }
+
+  return '';
+}
+
+/**
+ * 把「计分 / 不计分」按用户的选择设进表单，返回**到底设上了没有**。
+ *
+ * 【认字不认结构】CF 对允许 unrated 的轮次会放一个带 rated / unrated 字样的控件，但它是
+ * 复选框、单选组还是下拉框，各轮次的页面并不一致（2026-10-30 定：三种都按词认）。
+ * `takePartAs` 那一组是「个人 / 队伍」，与计分无关，名字里带 rating 也一律跳过。
+ *
+ * 【设不上就不提交】调用方靠这个布尔决定要不要回 `unrated-unavailable`：用户要的是不计分，
+ * 而这一页没有那个控件，替他按计分报下去是不可逆的错 —— 宁可让他自己去看一眼。
+ */
+function applyRatingChoice(form: HTMLFormElement, choice: RatingChoice): boolean {
+  const fields = Array.from(
+    form.querySelectorAll<HTMLInputElement | HTMLSelectElement>('input[type="checkbox"], input[type="radio"], select'),
+  );
+
+  let applied = false;
+
+  for (const field of fields) {
+    if ((field.getAttribute('name') ?? '') === 'takePartAs') {
+      continue;
+    }
+
+    // 下拉框：两个选项都在同一个控件里，按 option 的文字挑
+    if (field instanceof HTMLSelectElement) {
+      const option = Array.from(field.options).find(
+        candidate => ratingSide(`${candidate.value} ${candidate.textContent ?? ''}`) === choice,
+      );
+
+      if (option !== undefined) {
+        field.value = option.value;
+        field.dispatchEvent(new Event('change', { bubbles: true }));
+        applied = true;
+      }
+
+      continue;
+    }
+
+    const side = ratingSide(controlLabel(field, form));
+
+    if (side === '') {
+      continue;
+    }
+
+    field.checked = side === choice;
+    field.dispatchEvent(new Event('change', { bubbles: true }));
+
+    // 复选框两边都能表达：勾上=它自己那一边，不勾=另一边。所以只要认出了它是计分相关的，
+    // 「设上了」就成立 —— 「participate as rated」那颗不勾，本身就是不计分报名（实测最常见的
+    // 形态就是这个，2026-10-30）。单选组反过来：每颗只管自己那一边，没有要的那颗就是没有。
+    if (field.type === 'checkbox' || side === choice) {
+      applied = true;
+    }
+  }
+
+  return applied;
+}
+
 /** 只有 `action=formSubmitted` 是服务端要求的确认字段：缺了就补一个隐藏框 */
 function ensureField(form: HTMLFormElement, name: string, value: string): void {
   if (form.querySelector(`input[name="${name}"]`) !== null) {
@@ -222,7 +349,16 @@ function missingFormReason(): PageReason {
   return 'page';
 }
 
-function prepareEntry(kind: 'register' | 'virtual'): { result: ActionReply; form: HTMLFormElement | null } {
+/**
+ * 把报名表单准备好：确认字段、个人身份、以及（可选的）计分方式。
+ *
+ * 【unrated 只在「报名」上有意义】VP 本来就不计分，这一项对 VP 页一律不碰；
+ * 用户没选（unrated 缺省 false）时走显式「计分」，与改动前一字不差。
+ */
+function prepareEntry(
+  kind: 'register' | 'virtual',
+  options: { unrated?: boolean } = {},
+): { result: ActionReply; form: HTMLFormElement | null } {
   const problem = pageProblem();
 
   if (problem !== '') {
@@ -238,6 +374,20 @@ function prepareEntry(kind: 'register' | 'virtual'): { result: ActionReply; form
   // 两个确认字段是 CF 自己的表单要求的，缺一个服务端都会把这次 POST 当成没确认过
   ensureField(form, 'action', 'formSubmitted');
   applyField(form, 'takePartAs', 'personal');
+
+  if (kind === 'register') {
+    const wantUnrated = options.unrated === true;
+
+    // 计分是默认值：有那颗控件就显式选回来，没有也不必报错（页面默认就是计分）。
+    // 不计分反过来 —— 设不上就说明这一场没有这个选项，绝不替他按计分报下去
+    if (wantUnrated) {
+      if (!applyRatingChoice(form, 'unrated')) {
+        return { result: { ok: false, reason: 'unrated-unavailable' }, form: null };
+      }
+    } else {
+      applyRatingChoice(form, 'rated');
+    }
+  }
 
   if (kind === 'virtual') {
     // VP 页的隐藏字段：virtual 打开了才走虚拟参赛那条分支；teamId=-1 是「个人身份」
@@ -408,7 +558,7 @@ if (contestActionsWindow.__cpContestActionsInstalled !== true) {
 
     if (message?.action === MessageAction.SubmitRegistration || message?.action === MessageAction.StartVirtual) {
       const kind = message.action === MessageAction.StartVirtual ? 'virtual' : 'register';
-      const { result, form } = prepareEntry(kind);
+      const { result, form } = prepareEntry(kind, { unrated: message.payload?.unrated === true });
 
       sendResponse(result);
 

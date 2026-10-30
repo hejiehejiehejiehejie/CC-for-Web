@@ -161,6 +161,8 @@ function handlePageMessage(event: MessageEvent): void {
         language?: string;
         contestId?: string;
         handles?: string[];
+        /** cp-register 专用：要不要按「不计分」报名（2026-10-30 加，缺省 = 计分） */
+        unrated?: boolean;
       }
     | undefined;
   if (data?.source !== PAGE_SOURCE) {
@@ -276,7 +278,13 @@ function handlePageMessage(event: MessageEvent): void {
   // 后台不当场重试，也不做任何自动报名
   if (data.type === 'cp-register' || data.type === 'cp-start-virtual') {
     browser.runtime
-      .sendMessage({ action: data.type, requestId, contestId: data.contestId })
+      // unrated 只在「报名」上有意义（2026-10-30 加）：缺省 false = 计分，与老行为一致
+      .sendMessage({
+        action: data.type,
+        requestId,
+        contestId: data.contestId,
+        unrated: data.unrated === true,
+      })
       .then(result => postToPage(`${data.type}-result`, { requestId, ...(result as object) }))
       .catch(() => postToPage(`${data.type}-result`, { requestId, ok: false, reason: 'no-tab' }));
 
