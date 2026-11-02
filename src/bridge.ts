@@ -33,6 +33,11 @@ import { browser } from './utils/browser';
  * 受 `capabilities` 里的 contest-schedule / contest-register / contest-virtual /
  * contest-unofficial 保护 —— 老扩展没有这几条，网站上的入口压根不出现。
  *
+ * 【开 VP 的开始时间是 2026-11-03 新加的（扩展 2.70.0）】`cp-start-virtual` 多一个
+ * `startAt`（毫秒时间戳，0 = 现在）。受 `contest-virtual-start-time` 保护：老扩展不认识
+ * 这个字段，会按「现在开始」提交，等于把用户选的时间悄悄吃掉，所以站点先看能力位再决定
+ * 摆不摆那一行。同一版还修了「逐颗派发 change 让 CF 误判成队伍」那一发，见 contestActions.ts。
+ *
  * 【cp-submit / cp-submit-result / cp-submit-status 是 2026-10-23 新加的】网页请扩展把当前
  * 文件提交到 Codeforces（只在用户点那颗提交按钮 / 按快捷键时发生）。`cp-submit` 与
  * `cp-submit-result` 是一问一答，只说「表单交出去了没有 + 提交号」；之后后台在那个后台
@@ -163,6 +168,8 @@ function handlePageMessage(event: MessageEvent): void {
         handles?: string[];
         /** cp-register 专用：要不要按「不计分」报名（2026-10-30 加，缺省 = 计分） */
         unrated?: boolean;
+        /** cp-start-virtual 专用：虚拟参赛的开始时刻，毫秒时间戳（2026-11-03 加，缺省 = 现在） */
+        startAt?: number;
       }
     | undefined;
   if (data?.source !== PAGE_SOURCE) {
@@ -277,13 +284,17 @@ function handlePageMessage(event: MessageEvent): void {
   // 网页请扩展替用户报名 / 开一场 VP。**只在用户显式确认后**由网页发起，桥只负责递请求与答案；
   // 后台不当场重试，也不做任何自动报名
   if (data.type === 'cp-register' || data.type === 'cp-start-virtual') {
+    // unrated 只在「报名」上有意义（2026-10-30 加）：缺省 false = 计分，与老行为一致。
+    // startAt 只在「开 VP」上有意义（2026-11-03 加）：缺省 0 = 现在开始
+    const startAt = data.type === 'cp-start-virtual' && typeof data.startAt === 'number' ? data.startAt : 0;
+
     browser.runtime
-      // unrated 只在「报名」上有意义（2026-10-30 加）：缺省 false = 计分，与老行为一致
       .sendMessage({
         action: data.type,
         requestId,
         contestId: data.contestId,
         unrated: data.unrated === true,
+        startAt,
       })
       .then(result => postToPage(`${data.type}-result`, { requestId, ...(result as object) }))
       .catch(() => postToPage(`${data.type}-result`, { requestId, ok: false, reason: 'no-tab' }));

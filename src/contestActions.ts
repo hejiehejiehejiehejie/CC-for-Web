@@ -24,6 +24,10 @@
  * 【报名状态也是契约】`open` / `before` / `closed` / `registered` / `count` / `unknown`，
  * 网站按它决定那一列显示什么。`count` 是「只剩参赛人数那条链接」——比赛进行中与已结束都长这样，
  * 分不出能不能报名，所以单独留一个值，让网站显示成「—」而不是瞎猜一个。
+ *
+ * 【2026-11-03 两处改动】① `applyField` 不再对未选中的单选框派发 change —— CF 以前会把
+ * 「个人 / 队伍」的内部变量记成 team，提交时报 "Please, choose the team"；② 开 VP 时可以带
+ * 一个 `startAt`（毫秒时间戳），填进 CF 表单的 `Virtual start time`。
  */
 import { pageProblem } from './cfIdentity';
 import { MessageAction } from './models/messaging';
@@ -176,16 +180,33 @@ function findRegistrationForm(): HTMLFormElement | null {
  *
  * 三种控件都要照顾到：隐藏框直接改 value；复选框按「值是 true 就勾上」处理
  * （VP 页的 `virtual` / `requiredConfirmation` 就是复选框）；单选框只勾值对得上的那一颗。
- * 改完一律派发 change —— 报名页会在 change 里联动团队选择区，不派发的话提上去的还是旧状态。
+ * 改完派发 change —— 报名页会在 change 里联动团队选择区，不派发的话提上去的还是旧状态。
+ *
+ * 【只对真正变了的单选框 / 复选框派发】CF 的报名页把 `takePartAs` 的当前值缓存在一个变量里，
+ * change 处理器读的是**触发事件那颗 radio 的 value**，不看它 checked 与否（2026-11-03 实测）：
+ * 我们连「as a team member」那颗（未选中）也派发一次 change，CF 就把内部变量记成 team、
+ * 展开团队选择区，提交时校验报 "Please, choose the team" —— 明明界面上勾的是个人。
  */
 function applyField(form: HTMLFormElement, name: string, value: string): void {
   const fields = Array.from(form.querySelectorAll<HTMLInputElement>(`input[name="${name}"]`));
 
   for (const field of fields) {
     if (field.type === 'checkbox') {
-      field.checked = value === 'true' || field.value === value;
+      const next = value === 'true' || field.value === value;
+
+      if (field.checked === next) {
+        continue;
+      }
+
+      field.checked = next;
     } else if (field.type === 'radio') {
-      field.checked = field.value === value;
+      const next = field.value === value;
+
+      if (field.checked === next) {
+        continue;
+      }
+
+      field.checked = next;
     } else {
       field.value = value;
     }
@@ -314,6 +335,50 @@ function ensureField(form: HTMLFormElement, name: string, value: string): void {
   form.appendChild(input);
 }
 
+/** 直接写值、不派发事件：给挂了 jQuery 小部件的输入框用（见 applyVirtualStartAt） */
+function setFieldValue(form: HTMLFormElement, name: string, value: string): void {
+  const field = form.querySelector<HTMLInputElement>(`input[name="${name}"]`);
+
+  if (field !== null) {
+    field.value = value;
+  }
+}
+
+/** CF 的日期框用英文月份缩写（页面上自己初始化出来就是 `Nov/03/2026`） */
+const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+function padTwo(value: number): string {
+  return value < 10 ? `0${value}` : String(value);
+}
+
+/**
+ * 把用户选的虚拟参赛开始时刻填进 CF 的 VP 表单。
+ *
+ * 【与页面自己的初始化同格式】CF 的 `setupFormDatetimePicker` 把隐藏字段 `initialDatetime`
+ * （服务器时区的 `Nov/03/2026 01:35`）换算成本地时间，拆进 `startDay` + `startTime` 两个输入框，
+ * 服务端再靠 `clientTimezoneOffset`（分钟，东八区是 480）把它们换算回 UTC。这里照同样的格式填：
+ * 鼠标不动直接提交时，服务端收到的就是我们在这里写的这串。
+ *
+ * 【不派发事件】两个输入框各挂了一个 jQuery 小部件（datepick / timeEntry），它们的解析挂在
+ * input / blur 上 —— 直接写值等于页面初始化那一刻的写法；派发 change 反而可能让部件按自己的
+ * 显示格式重排一遍，把要提交的值改掉。
+ */
+function applyVirtualStartAt(form: HTMLFormElement, startAt: number): void {
+  const date = new Date(startAt);
+
+  if (Number.isNaN(date.getTime())) {
+    return;
+  }
+
+  const day = `${MONTH_NAMES[date.getMonth()]}/${padTwo(date.getDate())}/${date.getFullYear()}`;
+  const clock = `${padTwo(date.getHours())}:${padTwo(date.getMinutes())}`;
+
+  setFieldValue(form, 'startDay', day);
+  setFieldValue(form, 'startTime', clock);
+  // getTimezoneOffset() 是「本地比 UTC 早多少分钟」的反号（东八区返回 -480），与 moment().utcOffset() 同号
+  setFieldValue(form, 'clientTimezoneOffset', String(-date.getTimezoneOffset()));
+}
+
 /** 点页面自己的提交按钮（挂着自己的校验与 CSRF 处理）；实在找不到才退回 form.submit() */
 function submitForm(form: HTMLFormElement): void {
   const button = form.querySelector<HTMLElement>('input[type="submit"], button[type="submit"]');
@@ -350,14 +415,17 @@ function missingFormReason(): PageReason {
 }
 
 /**
- * 把报名表单准备好：确认字段、个人身份、以及（可选的）计分方式。
+ * 把报名表单准备好：确认字段、个人身份、以及（可选的）计分方式 / 虚拟参赛开始时刻。
  *
  * 【unrated 只在「报名」上有意义】VP 本来就不计分，这一项对 VP 页一律不碰；
  * 用户没选（unrated 缺省 false）时走显式「计分」，与改动前一字不差。
+ *
+ * 【startAt 只在「开 VP」上有意义】毫秒时间戳；缺省 / 不是正数时不动那一行，
+ * CF 页面自己的默认值就是「现在」，与改动前一字不差。
  */
 function prepareEntry(
   kind: 'register' | 'virtual',
-  options: { unrated?: boolean } = {},
+  options: { unrated?: boolean; startAt?: number } = {},
 ): { result: ActionReply; form: HTMLFormElement | null } {
   const problem = pageProblem();
 
@@ -394,6 +462,10 @@ function prepareEntry(
     applyField(form, 'virtual', 'true');
     applyField(form, 'requiredConfirmation', 'true');
     applyField(form, 'teamId', '-1');
+
+    if (typeof options.startAt === 'number' && Number.isFinite(options.startAt) && options.startAt > 0) {
+      applyVirtualStartAt(form, options.startAt);
+    }
   }
 
   return { result: { ok: true, reason: '' }, form };
@@ -558,7 +630,11 @@ if (contestActionsWindow.__cpContestActionsInstalled !== true) {
 
     if (message?.action === MessageAction.SubmitRegistration || message?.action === MessageAction.StartVirtual) {
       const kind = message.action === MessageAction.StartVirtual ? 'virtual' : 'register';
-      const { result, form } = prepareEntry(kind, { unrated: message.payload?.unrated === true });
+      const startAt = message.payload?.startAt;
+      const { result, form } = prepareEntry(kind, {
+        unrated: message.payload?.unrated === true,
+        startAt: typeof startAt === 'number' ? startAt : 0,
+      });
 
       sendResponse(result);
 

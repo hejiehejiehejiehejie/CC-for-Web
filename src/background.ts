@@ -440,6 +440,10 @@ const CAPABILITIES = [
   // 报名时能选「不计分」（2026-10-30 加）：只有允许 unrated 的轮次，CF 的报名表单里才有那颗
   // 控件；网站拿到这一条才在确认卡片上摆「计分 / 不计分」，老扩展下那一行不出现
   'contest-register-unrated',
+  // 开 VP 时能拨「Virtual start time」（2026-11-03 加）：网站拿到这一条才在确认卡片上摆
+  // 开始时间。老扩展不认识 `startAt`，会按「现在开始」提交 —— 那等于把用户选的时间悄悄吃掉，
+  // 所以站点先看能力位，没有就整行不出现
+  'contest-virtual-start-time',
 ];
 
 /**
@@ -1416,13 +1420,16 @@ async function readContestStatesOnCodeforces(): Promise<{
  * 这里原样交给内容脚本去拨那颗控件；VP 页不碰。设不上控件时内容脚本回 `unrated-unavailable`，
  * 这次报名就**不提交** —— 报名的计分方式不可逆，宁可不做，也不替他按计分报下去。
  *
+ * `startAt`（2026-11-03 加）只对「开 VP」有意义：毫秒时间戳，内容脚本把它填进 CF 表单的
+ * `Virtual start time`；0 / 缺省 = 不动那一行，CF 的默认值就是「现在」。
+ *
  * 回给网页的只有枚举。**这个函数只在网页侧用户确认之后被调用一次**，它自己不做任何
  * 自动重试或轮询 —— 报名是不可逆的，宁可让用户再点一次，也不要替他重放。
  */
 async function submitContestEntry(
   contestId: unknown,
   kind: 'register' | 'virtual',
-  unrated = false,
+  options: { unrated?: boolean; startAt?: number } = {},
 ): Promise<{ ok: boolean; reason: string }> {
   const target = contestTargetOf(contestId);
 
@@ -1437,7 +1444,8 @@ async function submitContestEntry(
   }
 
   const action = kind === 'virtual' ? MessageAction.StartVirtual : MessageAction.SubmitRegistration;
-  const result = readSubmitResult(await askContestAction(tabId, action, { unrated })) ?? { ok: false, reason: 'page' };
+  const payload = { unrated: options.unrated === true, startAt: options.startAt ?? 0 };
+  const result = readSubmitResult(await askContestAction(tabId, action, payload)) ?? { ok: false, reason: 'page' };
 
   if (!result.ok) {
     // 这三种都指向「那一页上有用户要看 / 要做的事」：登录、过人机校验、看 CF 到底说了什么。
@@ -1722,8 +1730,9 @@ function handleMessage(
   // 网页请扩展替用户报名 / 开一场 VP：只在用户显式点按确认之后发生一次（见 submitContestEntry）
   if (message.action === 'cp-register' || message.action === 'cp-start-virtual') {
     const kind = message.action === 'cp-start-virtual' ? 'virtual' : 'register';
+    const startAt = typeof message.startAt === 'number' ? message.startAt : 0;
 
-    submitContestEntry(message.contestId, kind, message.unrated === true)
+    submitContestEntry(message.contestId, kind, { unrated: message.unrated === true, startAt })
       .then(result => sendResponse(result))
       .catch(() => sendResponse({ ok: false, reason: 'page' }));
 
