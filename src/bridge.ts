@@ -38,6 +38,11 @@ import { browser } from './utils/browser';
  * 这个字段，会按「现在开始」提交，等于把用户选的时间悄悄吃掉，所以站点先看能力位再决定
  * 摆不摆那一行。同一版还修了「逐颗派发 change 让 CF 误判成队伍」那一发，见 contestActions.ts。
  *
+ * 【2.71.0（2026-11-03）】`cp-contest-states-result` 多一个 `virtuals`（CF「Recent virt.
+ * contests」里每一场 VP 的开始时刻）；`cp-unofficial-rank-result` 的每条 rank 多 `score`
+ * 与 `cells`（逐题格），受 `contest-unofficial-row` 保护。老扩展不带这两样，网站退回改动前的
+ * 样子（VP 只靠站内记账、非正式名次只显示那句话）。
+ *
  * 【cp-submit / cp-submit-result / cp-submit-status 是 2026-10-23 新加的】网页请扩展把当前
  * 文件提交到 Codeforces（只在用户点那颗提交按钮 / 按快捷键时发生）。`cp-submit` 与
  * `cp-submit-result` 是一问一答，只说「表单交出去了没有 + 提交号」；之后后台在那个后台
@@ -144,8 +149,29 @@ function onExtensionMessage(
   return true;
 }
 
+/**
+ * 扩展被重载 / 更新 / 关闭之后，还留在页面里的这一份桥就失联了：`runtime.id` 读不到，
+ * 再调 sendMessage 会**同步**抛 `Extension context invalidated.` —— 抛出发生在 Promise
+ * 之前，`.catch` 接不住，于是每来一条页面消息就往 chrome://extensions 的错误列表里记一条
+ * （开发时每改一次插件都要重载，旧桥于是在每个还开着的页面上反复报红）。
+ *
+ * 退场方式：撞上就摘掉监听，让后台补注入的那份新桥（background.ts 的 ensureBridges）单独
+ * 应答。旧桥留着只会继续报错，还可能抢在新桥前面把 cp-info 答成「没装」。
+ */
+function retireBridge(): void {
+  window.removeEventListener('message', handlePageMessage);
+}
+
 // 页面 -> 扩展（握手：网页据此判断扩展是否已安装，并取版本号与快捷键）
 function handlePageMessage(event: MessageEvent): void {
+  try {
+    respondToPage(event);
+  } catch {
+    retireBridge();
+  }
+}
+
+function respondToPage(event: MessageEvent): void {
   if (event.source !== window || event.origin !== window.location.origin) {
     return;
   }
@@ -276,7 +302,7 @@ function handlePageMessage(event: MessageEvent): void {
     browser.runtime
       .sendMessage({ action: 'cp-contest-states', requestId })
       .then(result => postToPage('cp-contest-states-result', { requestId, ...(result as object) }))
-      .catch(() => postToPage('cp-contest-states-result', { requestId, ok: false, reason: 'no-tab', states: {} }));
+      .catch(() => postToPage('cp-contest-states-result', { requestId, ok: false, reason: 'no-tab', states: {}, virtuals: [] }));
 
     return;
   }

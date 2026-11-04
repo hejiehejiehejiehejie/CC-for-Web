@@ -7,10 +7,15 @@
  *
  * 注意：localhost 与 127.0.0.1 是不同 origin；带 www 与不带 www 也是不同 origin，
  * 四个都要写，否则匹配不上就等同于「网站没打开」。
+ *
+ * 本机两条**不带端口**：匹配模式里的端口既不被 Firefox 接受（整个扩展加载失败），
+ * 也钉不住开发现场 —— Vite 的 strictPort 是 false，5199 被占时会顺延；
+ * 想验生产构建还得跑 preview（默认 4173）。不带端口则本机所有端口一起覆盖。
+ * 生产构建会按 DEV_ONLY_SITE_PATTERNS 把它们剔除（见 scripts/build/extension.ts）。
  */
 export const TARGET_SITE_PATTERNS: string[] = [
-  'http://localhost:5199/*',
-  'http://127.0.0.1:5199/*',
+  'http://localhost/*',
+  'http://127.0.0.1/*',
   'https://www.998244353.best/*',
   'https://998244353.best/*',
 ];

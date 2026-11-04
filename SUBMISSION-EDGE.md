@@ -156,7 +156,7 @@ corresponding site, and denied access simply disables that one site's extra
 resources.
 ```
 
-> **注意**：开发端口 `http://localhost:5199/*` 与 `http://127.0.0.1:5199/*` 已在生产构建中被剔除（`scripts/build/extension.ts` 的 `DEV_ONLY_SITE_PATTERNS`）。若哪天在提交材料里看到它们，说明构建参数被改成了非生产（`isProduction=false`）。
+> **注意**：本机开发站点 `http://localhost/*` 与 `http://127.0.0.1/*`（不带端口，覆盖 dev / preview / 端口顺延）已在生产构建中被剔除（`scripts/build/extension.ts` 的 `DEV_ONLY_SITE_PATTERNS`）。若哪天在提交材料里看到它们，说明构建参数被改成了非生产（`isProduction=false`）。
 
 ### 2.3 Are you using remote code?（是否使用远程代码）
 
@@ -518,7 +518,7 @@ npm run screenshots:store
 ## 7. 提交前检查清单
 
 - [ ] 站点已部署，`https://www.998244353.best/privacy.html` 与 `/privacy.en.html` 都能打开
-- [ ] `pnpm package:edge` 产出的包**是生产构建**（manifest 里**不含** `localhost:5199`，见第 2.2 节末尾）
+- [ ] `pnpm package:edge` 产出的包**是生产构建**（manifest 里**不含** `http://localhost/*` / `http://127.0.0.1/*`，见第 2.2 节末尾）
 - [ ] `diff build-chrome/manifest.json build-edge/manifest.json` 无输出（Edge 与 Chrome 分包完全一致）
 - [ ] manifest 的 `version` 与 `package.json` 一致，且比上一次提交的版本高
 - [ ] manifest 的 `description` 与 `homepage_url` 符合第 1 节的预期值

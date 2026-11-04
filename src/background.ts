@@ -444,6 +444,9 @@ const CAPABILITIES = [
   // 开始时间。老扩展不认识 `startAt`，会按「现在开始」提交 —— 那等于把用户选的时间悄悄吃掉，
   // 所以站点先看能力位，没有就整行不出现
   'contest-virtual-start-time',
+  // 非正式名次能带「整行」（2026-11-03 加）：回包里多 score + cells，站点才能把 VP 自己那一行
+  // 画进榜表格。只有名次数字的老扩展照旧只显示那句「含非正式：第 N 名」
+  'contest-unofficial-row',
 ];
 
 /**
@@ -1304,9 +1307,46 @@ async function askContestAction(
 
 const REGISTRATION_STATES = ['open', 'before', 'closed', 'registered', 'count', 'unknown'];
 
+interface VirtualEntry {
+  id: string;
+  name: string;
+  startMs: number;
+}
+
+/**
+ * 「Recent virt. contests」的回执：只认数字 id + 正的时间戳，名字当纯文本截一下。
+ * 认不出的一律丢掉 —— 站点按这份账本改写赛程里的开赛时刻，脏值比缺一条更糟。
+ */
+function readVirtuals(value: unknown): VirtualEntry[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  const entries: VirtualEntry[] = [];
+
+  for (const item of value as unknown[]) {
+    const entry = item as { id?: unknown; name?: unknown; startMs?: unknown };
+    const id = String(entry.id ?? '');
+    const startMs = Number(entry.startMs);
+
+    if (!/^\d+$/.test(id) || !Number.isFinite(startMs) || startMs <= 0) {
+      continue;
+    }
+
+    entries.push({ id, name: typeof entry.name === 'string' ? entry.name.slice(0, 120) : '', startMs });
+  }
+
+  return entries;
+}
+
 /** 把内容脚本的报名状态回执收成白名单过的形状：认不出的值一律丢掉，网站按「—」显示 */
-function readStatesReply(value: unknown): { ok: boolean; reason: string; states: Record<string, string> } {
-  const record = value as { ok?: unknown; reason?: unknown; states?: unknown } | null | undefined;
+function readStatesReply(value: unknown): {
+  ok: boolean;
+  reason: string;
+  states: Record<string, string>;
+  virtuals: VirtualEntry[];
+} {
+  const record = value as { ok?: unknown; reason?: unknown; states?: unknown; virtuals?: unknown } | null | undefined;
   const states: Record<string, string> = {};
 
   if (typeof record?.states === 'object' && record.states !== null) {
@@ -1321,6 +1361,7 @@ function readStatesReply(value: unknown): { ok: boolean; reason: string; states:
     ok: record?.ok === true,
     reason: typeof record?.reason === 'string' ? record.reason : 'page',
     states,
+    virtuals: readVirtuals(record?.virtuals),
   };
 }
 
@@ -1328,6 +1369,8 @@ interface RankEntry {
   handle: string;
   rank: number;
   unofficial: boolean;
+  score: string;
+  cells: Record<string, string>;
 }
 
 function readRankReply(value: unknown): {
@@ -1341,7 +1384,13 @@ function readRankReply(value: unknown): {
 
   if (Array.isArray(record?.ranks)) {
     for (const item of record.ranks as unknown[]) {
-      const entry = item as { handle?: unknown; rank?: unknown; unofficial?: unknown };
+      const entry = item as {
+        handle?: unknown;
+        rank?: unknown;
+        unofficial?: unknown;
+        score?: unknown;
+        cells?: unknown;
+      };
 
       // 只收「handle 是字符串 + 名次是有限数字」的条目：名次是要显示给用户的，宁可缺一条也不显示脏值
       if (
@@ -1350,7 +1399,24 @@ function readRankReply(value: unknown): {
         Number.isFinite(entry.rank) &&
         entry.rank > 0
       ) {
-        ranks.push({ handle: entry.handle, rank: entry.rank, unofficial: entry.unofficial === true });
+        // 逐题格的键就是题号（`A` / `B1`）；值截到 40 字 —— 一个格子里不会比这更长
+        const cells: Record<string, string> = {};
+
+        if (typeof entry.cells === 'object' && entry.cells !== null) {
+          for (const [index, text] of Object.entries(entry.cells as Record<string, unknown>)) {
+            if (/^[A-Z]\d{0,2}$/.test(index) && typeof text === 'string' && text !== '') {
+              cells[index] = text.slice(0, 40);
+            }
+          }
+        }
+
+        ranks.push({
+          handle: entry.handle,
+          rank: entry.rank,
+          unofficial: entry.unofficial === true,
+          score: typeof entry.score === 'string' ? entry.score.slice(0, 40) : '',
+          cells,
+        });
       }
     }
   }
@@ -1386,28 +1452,31 @@ async function waitForTabLeave(tabId: number, prefix: string, timeout: number): 
   }
 }
 
-/** 读 /contests/page/1 上每一场的报名状态（赛程那一列）。读完就关页，不打扰用户 */
+/** 读 /contests/page/1 上每一场的报名状态（赛程那一列）+ 右侧的「Recent virt. contests」。读完就关页 */
 async function readContestStatesOnCodeforces(): Promise<{
   ok: boolean;
   reason: string;
   states: Record<string, string>;
+  virtuals: VirtualEntry[];
 }> {
   // 只等到 DOM 可读：表格是服务端渲染的，等 load 白等两三秒（见 waitForTabDom）
   const tabId = await openSilentCfTab(CF_CONTESTS_URL, waitForTabDom);
 
   if (tabId === null) {
-    return { ok: false, reason: 'no-tab', states: {} };
+    return { ok: false, reason: 'no-tab', states: {}, virtuals: [] };
   }
 
   try {
     // 没登录时 CF 会把它导到 /enter，那一页上没有比赛表格
     if ((await tabUrlOf(tabId)).includes('/enter')) {
-      return { ok: false, reason: 'not-logged-in', states: {} };
+      return { ok: false, reason: 'not-logged-in', states: {}, virtuals: [] };
     }
 
     const answer = await askContestAction(tabId, MessageAction.ReadContestStates, {}, true);
 
-    return answer === undefined ? { ok: false, reason: 'page', states: {} } : readStatesReply(answer);
+    return answer === undefined
+      ? { ok: false, reason: 'page', states: {}, virtuals: [] }
+      : readStatesReply(answer);
   } finally {
     await browser.tabs.remove(tabId).catch(noop);
   }
@@ -1722,7 +1791,7 @@ function handleMessage(
   if (message.action === 'cp-contest-states') {
     readContestStatesOnCodeforces()
       .then(result => sendResponse(result))
-      .catch(() => sendResponse({ ok: false, reason: 'page', states: {} }));
+      .catch(() => sendResponse({ ok: false, reason: 'page', states: {}, virtuals: [] }));
 
     return true;
   }

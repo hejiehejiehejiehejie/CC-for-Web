@@ -91,10 +91,12 @@ const watch = process.argv[4] === 'true';
 
 const buildDirectory = await getBuildDirectory(target);
 
-// 开发端口只在本地开发时有意义（Vite dev server，端口见站点仓库的 vite.config.js）。
-// 生产包必须剔除：商店审查会追问「为什么需要读取 localhost:5199」，而真实用户根本用不到。
+// 本机站点只在本地开发时有意义（Vite dev server / preview）。
+// 生产包必须剔除：商店审查会追问「为什么需要读取 localhost」，而真实用户根本用不到。
+// 不带端口是刻意的 —— 覆盖开发端口顺延与 preview，且带端口的写法 Firefox 不认
+// （见 src/hosts/targetSites.ts）。
 // 注意只能在构建期过滤——targetSites.ts 里的常量是开发态运行时也要用的。
-const DEV_ONLY_SITE_PATTERNS = ['http://localhost:5199/*', 'http://127.0.0.1:5199/*'];
+const DEV_ONLY_SITE_PATTERNS = ['http://localhost/*', 'http://127.0.0.1/*'];
 
 const sitePatterns = TARGET_SITE_PATTERNS.filter(pattern => !isProduction || !DEV_ONLY_SITE_PATTERNS.includes(pattern));
 

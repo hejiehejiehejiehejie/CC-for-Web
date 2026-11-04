@@ -21,8 +21,8 @@
  *
  * 【只回原因枚举】reason 是**跨仓契约**（与网站侧 useCompanionBridge.js 的
  * `cp-submit-result` 一一对应）：`not-logged-in` / `challenge` / `problem-missing` /
- * `language-missing` / `page` / `empty`。其余原因（`no-tab`、`timeout`、`unsupported-url` 等）
- * 由后台与网站侧产生。
+ * `language-missing` / `page` / `empty`；提交按钮一直不解禁（比如题目被锁）时也回
+ * `rejected`。其余原因（`no-tab`、`timeout`、`unsupported-url` 等）由后台与网站侧产生。
  *
  * `challenge` 是 2026-10-23 实机测试后补的：干净浏览器打开 CF 提交页时会先落到 Cloudflare 的
  * 人机校验页（标题「请稍候…」）。它既不是登录页也没有提交表单，按 `page` 报会误导成「站点改版」，
@@ -38,7 +38,16 @@ import { browser } from './utils/browser';
  */
 const SUBMIT_DELAY = 50;
 
-type SubmitReason = 'not-logged-in' | 'challenge' | 'problem-missing' | 'language-missing' | 'page' | 'empty';
+/**
+ * 等提交按钮真的解禁的上限与步长（见 waitForSubmitEnabled）。正常路径只有几十到
+ * 几百毫秒；4 秒是给「/data/problemLock 慢一点」留的余量，必须小于后台的
+ * SUBMIT_RESPONSE_TIMEOUT（8 秒），否则回执会先被后台判成超时。
+ */
+const SUBMIT_ENABLE_TIMEOUT = 4000;
+const SUBMIT_ENABLE_POLL = 50;
+
+type SubmitReason =
+  'not-logged-in' | 'challenge' | 'problem-missing' | 'language-missing' | 'page' | 'empty' | 'rejected';
 
 interface SubmitResult {
   ok: boolean;
@@ -206,15 +215,40 @@ function selectProblem(form: HTMLFormElement, index: string): boolean {
 }
 
 /**
- * CF 的提交按钮是**服务端渲染成 disabled** 的，只有题目下拉框的 change 处理器
- * （页面内联脚本里的 updateSubmitButtonState）会把它解禁。只改 `.value` 不派发事件，
- * 按钮一直是灰的，`click()` 变成空操作 —— 用户看到的就是「代码填好了、却不提交」，
- * 20 秒后报「Codeforces 拒绝了这次提交」（2026-10-23 实报）。
+ * CF 的提交按钮在题目没选时是禁用的，只有题目下拉框的 change 处理器会把它解禁：
+ * 2026-10-23 那一版的页面脚本叫 updateSubmitButtonState，解禁是同步的；
+ * 2026-11-03 实报的提交页（contest/2272）已改名为 updateProblemLockInfo ——
+ * 它先 `$.post("/data/problemLock", …)`，**在回调里**才 removeAttr("disabled")。
  *
- * 解禁是同步的（jQuery 的 change 处理器当场 removeAttr），所以派发完就能点。
+ * 所以派发 change 之后不能立刻点：那一刻按钮还是灰的，`click()` 是空操作，
+ * 用户看到的就是「停在提交页、既不跳转也不报错」（本次实报）。只改 `.value` 不派发事件
+ * 也不行，按钮一直是灰的（2026-10-23 实报同款症状）。解禁与否交给 waitForSubmitEnabled 盯。
  */
 function enableSubmit(select: HTMLSelectElement): void {
   select.dispatchEvent(new Event('change', { bubbles: true }));
+}
+
+function findSubmitButton(form: HTMLFormElement): HTMLInputElement | HTMLButtonElement | null {
+  return form.querySelector<HTMLInputElement | HTMLButtonElement>('input[type="submit"], button[type="submit"]');
+}
+
+/** 等页面自己把提交按钮解禁（见 enableSubmit 的注释）。找不到按钮时视为可提交，走 form.submit() 兜底 */
+async function waitForSubmitEnabled(form: HTMLFormElement, timeout: number): Promise<boolean> {
+  const deadline = Date.now() + timeout;
+
+  for (;;) {
+    const button = findSubmitButton(form);
+
+    if (button === null || !button.disabled) {
+      return true;
+    }
+
+    if (Date.now() >= deadline) {
+      return false;
+    }
+
+    await new Promise(resolve => window.setTimeout(resolve, SUBMIT_ENABLE_POLL));
+  }
 }
 
 /**
@@ -282,7 +316,7 @@ function fillSource(form: HTMLFormElement, source: string): boolean {
 
 /** 点页面自己的提交按钮（挂着校验 / CSRF 处理）；实在找不到才退回 form.submit() */
 function submitForm(form: HTMLFormElement): void {
-  const button = form.querySelector<HTMLElement>('input[type="submit"], button[type="submit"]');
+  const button = findSubmitButton(form);
 
   if (button !== null) {
     button.click();
@@ -334,14 +368,29 @@ browser.runtime.onMessage.addListener((message: any, _sender, sendResponse) => {
   if (message?.action === MessageAction.SubmitCode) {
     const { result, form } = fill(message.payload ?? {});
 
-    sendResponse(result);
+    if (!result.ok || form === null) {
+      sendResponse(result);
 
-    // 回话先走，提交后走：页面一跳转，消息通道就没了（见 SUBMIT_DELAY）
-    if (result.ok && form !== null) {
-      window.setTimeout(() => submitForm(form), SUBMIT_DELAY);
+      return undefined;
     }
 
-    return undefined;
+    // 等按钮解禁再回话，然后才点。旧的流程是「立刻回话 + 50ms 后点」，在 2026-11 的
+    // 提交页（异步解禁）上就会点在灰按钮上：页面停住，后台白等 20 秒再报拒收
+    void (async () => {
+      if (!(await waitForSubmitEnabled(form, SUBMIT_ENABLE_TIMEOUT))) {
+        // 页面会在题号旁自己挂红字（如「problem was locked」）；这里只回枚举，照常收尾
+        sendResponse({ ok: false, reason: 'rejected' });
+
+        return;
+      }
+
+      sendResponse(result);
+
+      // 回话先走，提交后走：页面一跳转，消息通道就没了（见 SUBMIT_DELAY）
+      window.setTimeout(() => submitForm(form), SUBMIT_DELAY);
+    })();
+
+    return true;
   }
 
   if (message?.action === MessageAction.ReadSubmission) {
