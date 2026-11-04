@@ -766,7 +766,6 @@ function waitForTabReload(tabId: number, timeout: number): Promise<boolean> {
   return new Promise<boolean>(resolve => {
     let sawLoading = false;
     let settled = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
 
     const finish = (saved: boolean): void => {
       if (settled) {
@@ -776,9 +775,7 @@ function waitForTabReload(tabId: number, timeout: number): Promise<boolean> {
       settled = true;
       browser.tabs.onUpdated.removeListener(onUpdated);
 
-      if (timer !== undefined) {
-        clearTimeout(timer);
-      }
+      clearTimeout(timer);
 
       resolve(saved);
     };
@@ -800,7 +797,8 @@ function waitForTabReload(tabId: number, timeout: number): Promise<boolean> {
     }
 
     browser.tabs.onUpdated.addListener(onUpdated);
-    timer = setTimeout(() => finish(false), timeout);
+    // 只赋一次值：finish 在监听器 / 定时器回调里才跑，那时它已经初始化（不是同步调用）
+    const timer = setTimeout(() => finish(false), timeout);
   });
 }
 
@@ -1474,9 +1472,7 @@ async function readContestStatesOnCodeforces(): Promise<{
 
     const answer = await askContestAction(tabId, MessageAction.ReadContestStates, {}, true);
 
-    return answer === undefined
-      ? { ok: false, reason: 'page', states: {}, virtuals: [] }
-      : readStatesReply(answer);
+    return answer === undefined ? { ok: false, reason: 'page', states: {}, virtuals: [] } : readStatesReply(answer);
   } finally {
     await browser.tabs.remove(tabId).catch(noop);
   }
