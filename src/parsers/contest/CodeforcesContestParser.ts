@@ -111,9 +111,7 @@ export class CodeforcesContestParser extends SimpleContestParser {
       // 【别照抄传进来的 url】那样每一道题都会带着「/contest/x/problems」这个地址出门，
       // 而接收端一般按 url 认题：整场会被并成同一道题，后面的样例覆盖前面的，
       // 真正该收样例的那几道题一个字节也拿不到（网页版 2026-10-26 实测如此）
-      const index = problemElem
-        .querySelector('.problemindexholder[problemindex]')
-        ?.getAttribute('problemindex');
+      const index = problemElem.querySelector('.problemindexholder[problemindex]')?.getAttribute('problemindex');
       const problemUrl = index ? `${base}/problem/${index}` : url;
 
       const task = (await this.problemParser.parse(problemUrl, problemElem.innerHTML)) as Task;

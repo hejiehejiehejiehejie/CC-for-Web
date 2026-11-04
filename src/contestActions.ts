@@ -275,8 +275,7 @@ function readVirtualContests(): VirtualEntry[] {
     }
 
     const startMs =
-      countdownStartMs(link) ||
-      parsePageTime(link.getAttribute('data-virtual-start-time') ?? '', offsetMinutes);
+      countdownStartMs(link) || parsePageTime(link.getAttribute('data-virtual-start-time') ?? '', offsetMinutes);
 
     if (startMs <= 0) {
       continue;

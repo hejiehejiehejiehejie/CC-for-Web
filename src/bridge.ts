@@ -302,7 +302,9 @@ function respondToPage(event: MessageEvent): void {
     browser.runtime
       .sendMessage({ action: 'cp-contest-states', requestId })
       .then(result => postToPage('cp-contest-states-result', { requestId, ...(result as object) }))
-      .catch(() => postToPage('cp-contest-states-result', { requestId, ok: false, reason: 'no-tab', states: {}, virtuals: [] }));
+      .catch(() =>
+        postToPage('cp-contest-states-result', { requestId, ok: false, reason: 'no-tab', states: {}, virtuals: [] }),
+      );
 
     return;
   }
